@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+__pycache__
+*.pyc
+*.db
+data/
+_test_*.py
+!start_backend.bat
+!start_backend.sh
