@@ -58,7 +58,7 @@ export default function AssessmentPage() {
     const minutes = parseInt(timeInput, 10);
     if (isNaN(minutes) || minutes <= 0) return;
     await recordBehavior({
-      user_id: 'default',
+      // user_id from JWT
       study_time_minutes: minutes,
       resource_type: 'general',
     });
@@ -76,7 +76,7 @@ export default function AssessmentPage() {
 
     await generateAssessmentStream(
       {
-        user_id: 'default',
+        // user_id from JWT
         profile: profile || {},
         study_data: {
           total_study_time_minutes: totalTime,

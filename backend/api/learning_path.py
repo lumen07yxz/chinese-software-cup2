@@ -1,10 +1,11 @@
 """学习路径 API"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from db import async_session
-from models import LearningPath
+from models import LearningPath, User
+from auth import get_current_user
 from services.spark_service import spark_service
 from services.rag_service import rag_service
 import json
@@ -14,18 +15,17 @@ router = APIRouter(prefix="/api/learning-path", tags=["learning-path"])
 
 
 class PathRequest(BaseModel):
-    user_id: str = "default"
     profile: dict = {}
     chapter: str = ""
     knowledge_graph: dict = {}
 
 
 @router.get("/")
-async def get_learning_path(user_id: str = "default"):
+async def get_learning_path(current_user: User = Depends(get_current_user)):
     async with async_session() as session:
         from sqlalchemy import select
         result = await session.execute(
-            select(LearningPath).where(LearningPath.user_id == user_id)
+            select(LearningPath).where(LearningPath.user_id == current_user.username)
             .order_by(LearningPath.updated_at.desc())
         )
         path = result.scalars().first()
@@ -42,7 +42,10 @@ async def get_learning_path(user_id: str = "default"):
 
 
 @router.post("/generate")
-async def generate_path(req: PathRequest):
+async def generate_path(
+    req: PathRequest,
+    current_user: User = Depends(get_current_user),
+):
     """流式生成个性化学习路径"""
     chapters = ["人工智能导论", "机器学习基础", "深度学习基础", "Transformer架构",
                  "自然语言处理", "计算机视觉", "强化学习", "AI伦理与安全",
@@ -97,7 +100,7 @@ async def generate_path(req: PathRequest):
                 async with async_session() as session:
                     from sqlalchemy import select
                     result = await session.execute(
-                        select(LearningPath).where(LearningPath.user_id == req.user_id)
+                        select(LearningPath).where(LearningPath.user_id == current_user.username)
                     )
                     existing = result.scalars().first()
                     if existing:
@@ -105,7 +108,7 @@ async def generate_path(req: PathRequest):
                         existing.updated_at = __import__('datetime').datetime.utcnow()
                     else:
                         new_path = LearningPath(
-                            user_id=req.user_id,
+                            user_id=current_user.username,
                             path_data=path_data,
                             current_node=chapters[0],
                             progress=0.0,

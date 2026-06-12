@@ -14,6 +14,12 @@ from typing import AsyncGenerator
 
 from services.spark_service import spark_service
 from services.rag_service import rag_service
+from services.safety_service import (
+    check_safety,
+    llm_safety_check,
+    llm_hallucination_check,
+    add_hallucination_disclaimer,
+)
 from agents.resource_agents.orchestrator import (
     ORCHESTRATOR_ROLE,
     ORCHESTRATOR_GOAL,
@@ -116,6 +122,7 @@ class ResourceCoordinator:
     async def generate(self) -> AsyncGenerator[str, None]:
         """编排多 Agent 协作，产出 SSE 事件字符串。"""
         full_output = ""
+        self._safety_results: dict = {}  # 供 API 路由读取安全审查结果
 
         try:
             # ── Step 1: RAG 检索（包装为 Agent 行为）──
@@ -200,18 +207,65 @@ class ResourceCoordinator:
             ) + "\n\n"
             await asyncio.sleep(0.05)
 
-            # ── Step 4: 安全审查 ──
+            # ── Step 4: 安全审查（正则 + LLM-as-judge 双层）──
             yield json.dumps(
-                self._emit_status("safety_checker", "working", "正在进行内容安全审查..."),
+                self._emit_status("safety_checker", "working", "正在进行正则安全扫描..."),
                 ensure_ascii=False,
             ) + "\n\n"
             await asyncio.sleep(0.1)
 
-            # 安全审查由调用方（API route）执行，这里只发状态
+            # 4-a: 正则快速扫描
+            regex_result = check_safety(full_output)
+            if not regex_result["safe"]:
+                categories = ", ".join(f["category"] for f in regex_result["flags"])
+                yield json.dumps(
+                    self._emit_text(f"\n> ⚠️ 正则扫描发现敏感内容：{categories}\n\n"),
+                    ensure_ascii=False,
+                ) + "\n\n"
+
+            # 4-b: LLM-as-judge 内容安全审查
             yield json.dumps(
-                self._emit_status("safety_checker", "done", "安全审查完成"),
+                self._emit_status("safety_checker", "working", "正在进行 LLM 深度安全审查..."),
                 ensure_ascii=False,
             ) + "\n\n"
+
+            llm_safety = await llm_safety_check(full_output)
+            if not llm_safety["safe"]:
+                issues_str = "；".join(llm_safety["issues"][:3])
+                yield json.dumps(
+                    self._emit_text(
+                        f"\n> ⚠️ LLM 安全审查（风险等级：{llm_safety['risk_level']}）：{issues_str}\n\n"
+                    ),
+                    ensure_ascii=False,
+                ) + "\n\n"
+
+            # 4-c: LLM-as-judge 幻觉检测
+            yield json.dumps(
+                self._emit_status("safety_checker", "working", "正在进行事实准确性核查..."),
+                ensure_ascii=False,
+            ) + "\n\n"
+
+            hallucination = await llm_hallucination_check(full_output, context)
+            if hallucination["has_hallucination"]:
+                issues_str = "；".join(hallucination["issues"][:3])
+                yield json.dumps(
+                    self._emit_text(
+                        f"\n> 🔍 事实核查发现潜在不准确内容（置信度 {hallucination['confidence']:.0%}）：{issues_str}\n\n"
+                    ),
+                    ensure_ascii=False,
+                ) + "\n\n"
+
+            yield json.dumps(
+                self._emit_status("safety_checker", "done", "安全审查完成（正则 + LLM 双层）"),
+                ensure_ascii=False,
+            ) + "\n\n"
+
+            # 保存安全审查结果供 API 路由使用（避免重复调用 LLM）
+            self._safety_results = {
+                "regex": regex_result,
+                "llm_safety": llm_safety,
+                "hallucination": hallucination,
+            }
 
             # ── Step 5: 返回完整输出供存储 ──
             yield full_output

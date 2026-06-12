@@ -1,11 +1,15 @@
 """资源管理 API —— 多智能体协作生成"""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from db import async_session
-from models import LearningResource
-from services.safety_service import check_safety, add_hallucination_disclaimer
+from models import LearningResource, User
+from services.safety_service import (
+    check_safety,
+    add_hallucination_disclaimer,
+)
+from auth import get_current_user
 from agents.coordinator import ResourceCoordinator
 import json
 import asyncio
@@ -14,7 +18,6 @@ router = APIRouter(prefix="/api/resources", tags=["resources"])
 
 
 class GenerateRequest(BaseModel):
-    user_id: str = "default"
     resource_type: str
     topic: str
     chapter: str = ""
@@ -23,10 +26,13 @@ class GenerateRequest(BaseModel):
 
 
 @router.get("/")
-async def list_resources(user_id: str = "default", resource_type: str | None = None):
+async def list_resources(
+    resource_type: str | None = None,
+    current_user: User = Depends(get_current_user),
+):
     async with async_session() as session:
         from sqlalchemy import select
-        query = select(LearningResource).where(LearningResource.user_id == user_id)
+        query = select(LearningResource).where(LearningResource.user_id == current_user.username)
         if resource_type:
             query = query.where(LearningResource.resource_type == resource_type)
         query = query.order_by(LearningResource.created_at.desc()).limit(50)
@@ -49,7 +55,10 @@ async def list_resources(user_id: str = "default", resource_type: str | None = N
 
 
 @router.post("/generate")
-async def generate_resource_stream(req: GenerateRequest):
+async def generate_resource_stream(
+    req: GenerateRequest,
+    current_user: User = Depends(get_current_user),
+):
     """多智能体协作生成资源（SSE 流式）
 
     编排流程：
@@ -93,11 +102,25 @@ async def generate_resource_stream(req: GenerateRequest):
             if not full_content:
                 full_content = "（内容生成异常）"
 
-            # 安全审查与防幻觉
+            # 安全审查与防幻觉（LLM 审查已在 coordinator Step 4 执行，这里汇总结果）
             full_content = add_hallucination_disclaimer(full_content)
-            safety = check_safety(full_content)
-            if not safety["safe"]:
-                yield f"data: {json.dumps({'type': 'warning', 'content': str(safety['flags'])}, ensure_ascii=False)}\n\n"
+            warnings = []
+
+            safety_results = getattr(coordinator, "_safety_results", {})
+            regex_result = safety_results.get("regex", check_safety(full_content))
+            llm_safety = safety_results.get("llm_safety", {})
+            hallucination = safety_results.get("hallucination", {})
+
+            if not regex_result.get("safe", True):
+                warnings.append(f"正则扫描: {regex_result.get('suggestion', '')}")
+            if not llm_safety.get("safe", True):
+                warnings.append(f"LLM审查({llm_safety.get('risk_level', '?')}): {'; '.join(llm_safety.get('issues', [])[:3])}")
+            if hallucination.get("has_hallucination"):
+                conf = hallucination.get("confidence", 0)
+                warnings.append(f"事实核查({conf:.0%}): {'; '.join(hallucination.get('issues', [])[:3])}")
+
+            if warnings:
+                yield f"data: {json.dumps({'type': 'warning', 'content': ' | '.join(warnings)}, ensure_ascii=False)}\n\n"
 
             # 存储资源
             title_map = {
@@ -109,7 +132,7 @@ async def generate_resource_stream(req: GenerateRequest):
             }
             async with async_session() as session:
                 resource = LearningResource(
-                    user_id=req.user_id,
+                    user_id=current_user.username,
                     resource_type=req.resource_type,
                     title=f"{title_map.get(req.resource_type, '资源')}: {req.topic}",
                     description=full_content[:200],

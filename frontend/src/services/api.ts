@@ -15,27 +15,68 @@ export interface StudentProfile {
   conversation_summary: string
 }
 
+export interface ConversationItem {
+  id: number
+  title: string
+  created_at: string
+  updated_at: string
+}
+
 async function apiFetch(path: string, options: RequestInit = {}) {
+  const token = localStorage.getItem('auth_token')
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options.headers as Record<string, string>) || {}),
   }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   return fetch(`${API_BASE}${path}`, { ...options, headers })
 }
 
+// ── 认证 API ────────────────────────────────────────────────
+
+export async function login(username: string, password: string) {
+  console.log('[api login] calling /api/auth/login with', { username })
+  const resp = await apiFetch('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: '登录失败' }))
+    console.error('[login failed]', resp.status, err)
+    throw new Error(err.detail || '登录失败')
+  }
+  const data = await resp.json()
+  console.log('[login success]', data)
+  return data
+}
+
+export async function register(username: string, password: string, nickname?: string) {
+  const resp = await apiFetch('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, nickname: nickname || username }),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: '注册失败' }))
+    throw new Error(err.detail || '注册失败')
+  }
+  return resp.json()
+}
+
+// ── 对话 API ────────────────────────────────────────────────
+
 export async function sendChatMessage(
   message: string,
-  userId: string,
-  history: ChatMessage[],
+  conversationId: number | null,
   onChunk: (text: string) => void,
-  onDone: () => void,
+  onDone: (conversationId: number) => void,
   onError: (err: string) => void,
   onEvent?: (type: string, data: unknown) => void,
-  existingProfile?: Record<string, unknown> | null,
 ): Promise<void> {
   try {
-    const body: Record<string, unknown> = { message, user_id: userId, history }
-    if (existingProfile) body.profile = existingProfile
+    const body: Record<string, unknown> = { message }
+    if (conversationId) body.conversation_id = conversationId
     const resp = await apiFetch('/chat/stream', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -56,25 +97,53 @@ export async function sendChatMessage(
           try {
             const data = JSON.parse(line.slice(6))
             if (data.type === 'text') onChunk(data.content)
-            else if (data.type === 'done') onDone()
+            else if (data.type === 'done') {
+              onDone(data.conversation_id || 0)
+            }
             else if (data.type === 'error') onError(data.content)
             else if (onEvent) onEvent(data.type as string, data)
           } catch { /* skip */ }
         }
       }
     }
-    onDone()
   } catch (e: unknown) { onError(e instanceof Error ? e.message : 'Network error') }
 }
 
-export async function fetchProfile(userId: string): Promise<StudentProfile | null> {
+export async function fetchConversations(): Promise<{ conversations: ConversationItem[] }> {
+  const resp = await apiFetch('/conversations/')
+  return resp.json()
+}
+
+export async function createConversation() {
+  const resp = await apiFetch('/conversations/', {
+    method: 'POST',
+    body: JSON.stringify({ title: '新对话' }),
+  })
+  return resp.json()
+}
+
+export async function fetchConversationMessages(conversationId: number) {
+  const resp = await apiFetch(`/conversations/${conversationId}/messages`)
+  return resp.json()
+}
+
+export async function deleteConversation(conversationId: number) {
+  const resp = await apiFetch(`/conversations/${conversationId}`, { method: 'DELETE' })
+  return resp.json()
+}
+
+// ── 画像 API ────────────────────────────────────────────────
+
+export async function fetchProfile(): Promise<StudentProfile | null> {
   try {
-    const resp = await apiFetch(`/profile/${userId}`)
+    const resp = await apiFetch('/profile/')
     if (!resp.ok) return null
     const data = await resp.json()
     return data.profile
   } catch { return null }
 }
+
+// ── 资源 API ────────────────────────────────────────────────
 
 export async function fetchResources(type?: string) {
   const params = new URLSearchParams()
@@ -97,6 +166,8 @@ export async function fetchResourceDetail(id: number) {
   return resp.json()
 }
 
+// ── 学习路径 API ────────────────────────────────────────────
+
 export async function fetchLearningPath() {
   const resp = await apiFetch('/learning-path/')
   return resp.json()
@@ -109,6 +180,8 @@ export async function generateLearningPath(data: Record<string, unknown>) {
   })
   return resp
 }
+
+// ── 学习评估 API ────────────────────────────────────────────
 
 export async function fetchAssessment() {
   const resp = await apiFetch('/assessment/')
@@ -123,7 +196,8 @@ export async function recordBehavior(data: Record<string, unknown>) {
   return resp.json()
 }
 
-/** SSE 流式通用读取函数 */
+// ── SSE 流式通用读取函数 ────────────────────────────────────
+
 function readSSEStream<T extends string>(
   resp: Response,
   onChunk: (text: string) => void,
@@ -166,9 +240,8 @@ export async function generateLearningPathStream(
   onDone: () => void,
   onError: (err: string) => void,
 ): Promise<void> {
-  const resp = await fetch('/api/learning-path/generate', {
+  const resp = await apiFetch('/learning-path/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
   return readSSEStream(resp, onChunk, onDone, onError)
@@ -180,9 +253,8 @@ export async function generateAssessmentStream(
   onDone: () => void,
   onError: (err: string) => void,
 ): Promise<void> {
-  const resp = await fetch('/api/assessment/generate', {
+  const resp = await apiFetch('/assessment/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
   return readSSEStream(resp, onChunk, onDone, onError)
@@ -207,9 +279,8 @@ export async function generateResourcesStream(
   onError: (err: string) => void,
   onAgentStatus?: (status: AgentStatusEvent) => void,
 ): Promise<void> {
-  const resp = await fetch('/api/resources/generate', {
+  const resp = await apiFetch('/resources/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
   return readSSEStream(

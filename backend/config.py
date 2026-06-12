@@ -21,5 +21,10 @@ class Settings(BaseSettings):
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
 
+    # JWT 认证配置
+    jwt_secret_key: str = "change-me-in-production-use-a-real-secret"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 1440  # 24 小时
+
 
 settings = Settings()

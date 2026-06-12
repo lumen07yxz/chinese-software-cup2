@@ -1,15 +1,15 @@
 """学习画像 API"""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from db import async_session
-from models import StudentProfile
+from models import StudentProfile, User
+from auth import get_current_user
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
 
 class ProfileUpdateRequest(BaseModel):
-    user_id: str
     knowledge_base: dict | None = None
     cognitive_style: str | None = None
     weak_points: list[str] | None = None
@@ -18,13 +18,13 @@ class ProfileUpdateRequest(BaseModel):
     interests: list[str] | None = None
 
 
-@router.get("/{user_id}")
-async def get_profile(user_id: str):
-    """获取用户学习画像"""
+@router.get("/")
+async def get_profile(current_user: User = Depends(get_current_user)):
+    """获取当前用户学习画像"""
     async with async_session() as session:
         from sqlalchemy import select
         result = await session.execute(
-            select(StudentProfile).where(StudentProfile.user_id == user_id)
+            select(StudentProfile).where(StudentProfile.user_id == current_user.username)
         )
         profile = result.scalar_one_or_none()
         if not profile:
@@ -42,17 +42,21 @@ async def get_profile(user_id: str):
 
 
 @router.post("/update")
-async def update_profile(req: ProfileUpdateRequest):
+async def update_profile(
+    req: ProfileUpdateRequest,
+    current_user: User = Depends(get_current_user),
+):
     """创建或更新学习画像"""
+    user_id = current_user.username
     async with async_session() as session:
         from sqlalchemy import select
         result = await session.execute(
-            select(StudentProfile).where(StudentProfile.user_id == req.user_id)
+            select(StudentProfile).where(StudentProfile.user_id == user_id)
         )
         profile = result.scalar_one_or_none()
 
         if not profile:
-            profile = StudentProfile(user_id=req.user_id)
+            profile = StudentProfile(user_id=user_id)
             session.add(profile)
 
         if req.knowledge_base is not None:
@@ -69,4 +73,4 @@ async def update_profile(req: ProfileUpdateRequest):
             profile.interests = req.interests
 
         await session.commit()
-        return {"status": "updated", "user_id": req.user_id}
+        return {"status": "updated"}

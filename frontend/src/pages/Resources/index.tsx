@@ -130,7 +130,7 @@ export default function ResourcesPage() {
 
     await generateResourcesStream(
       {
-        user_id: 'default',
+        // user_id removed (now from JWT)
         resource_type: genType,
         topic: genTopic,
         chapter: genChapter,

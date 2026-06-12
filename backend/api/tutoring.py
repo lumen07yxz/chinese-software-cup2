@@ -1,8 +1,10 @@
 """智能辅导 API —— 多模态答疑"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from models import User
+from auth import get_current_user
 from services.spark_service import spark_service
 from services.rag_service import rag_service
 from services.safety_service import check_safety, add_hallucination_disclaimer
@@ -13,7 +15,6 @@ router = APIRouter(prefix="/api/tutoring", tags=["tutoring"])
 
 
 class TutoringRequest(BaseModel):
-    user_id: str = "default"
     question: str
     context: str = ""
     history: list[dict] = []
@@ -21,7 +22,10 @@ class TutoringRequest(BaseModel):
 
 
 @router.post("/ask")
-async def ask_question(req: TutoringRequest):
+async def ask_question(
+    req: TutoringRequest,
+    current_user: User = Depends(get_current_user),
+):
     """流式智能答疑"""
     # RAG 检索相关课程内容
     results = rag_service.search(req.question, top_k=4)

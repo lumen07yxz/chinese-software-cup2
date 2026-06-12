@@ -13,6 +13,8 @@ from api.resources import router as resources_router
 from api.learning_path import router as learning_path_router
 from api.assessment import router as assessment_router
 from api.tutoring import router as tutoring_router
+from api.conversations import router as conversations_router
+from api.auth import router as auth_router
 
 
 @asynccontextmanager
@@ -42,6 +44,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
+app.include_router(conversations_router)
 app.include_router(chat_router)
 app.include_router(profile_router)
 app.include_router(resources_router)

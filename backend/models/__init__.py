@@ -63,3 +63,39 @@ class AssessmentRecord(Base):
     resource_interactions = Column(Integer, default=0)
     assessment_report = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ── 用户与对话模型 ──────────────────────────────────────────────────
+
+
+class User(Base):
+    """用户账号"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(64), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(256), nullable=False)
+    nickname = Column(String(64), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Conversation(Base):
+    """对话会话"""
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), index=True, nullable=False)
+    title = Column(String(256), default="新对话")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ConversationMessage(Base):
+    """对话消息"""
+    __tablename__ = "conversation_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, index=True, nullable=False)
+    role = Column(String(16), nullable=False)  # "user" | "assistant" | "system"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
+import { useAuthStore } from '../stores/authStore'
 
 const navItems = [
   { path: '/chat', label: '对话画像', icon: ChatIcon },
@@ -11,6 +12,7 @@ const navItems = [
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
+  const { user, logout } = useAuthStore()
 
   return (
     <aside
@@ -48,19 +50,37 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* Collapse toggle */}
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center justify-center h-10 border-t border-border text-muted hover:text-ink transition-colors"
-      >
-        <svg
-          width="16" height="16" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
-          className={`transition-transform ${collapsed ? 'rotate-180' : ''}`}
+      {/* User info & Logout */}
+      <div className="border-t border-border">
+        {!collapsed && user && (
+          <div className="px-4 py-2 text-xs text-muted truncate">
+            {user.nickname}
+          </div>
+        )}
+        <button
+          onClick={logout}
+          className="w-full flex items-center gap-3 px-3 py-2.5 text-[14px] text-muted
+            hover:bg-cream hover:text-ink transition-colors"
         >
-          <path d="M15 18l-6-6 6-6"/>
-        </svg>
-      </button>
+          <LogoutIcon className="w-5 h-5 flex-shrink-0" />
+          {!collapsed && <span>退出登录</span>}
+        </button>
+
+        {/* Collapse toggle */}
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="flex items-center justify-center h-10 w-full border-t border-border
+            text-muted hover:text-ink transition-colors"
+        >
+          <svg
+            width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
+            className={`transition-transform ${collapsed ? 'rotate-180' : ''}`}
+          >
+            <path d="M15 18l-6-6 6-6"/>
+          </svg>
+        </button>
+      </div>
     </aside>
   )
 }
@@ -111,6 +131,16 @@ function ProfileIcon({ className }: { className?: string }) {
     <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
       <circle cx="12" cy="7" r="4"/>
+    </svg>
+  )
+}
+
+function LogoutIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+      <polyline points="16 17 21 12 16 7"/>
+      <line x1="21" y1="12" x2="9" y2="12"/>
     </svg>
   )
 }

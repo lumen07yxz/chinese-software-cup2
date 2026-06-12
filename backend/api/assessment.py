@@ -1,10 +1,11 @@
 """学习评估 API"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from db import async_session
-from models import AssessmentRecord
+from models import AssessmentRecord, User
+from auth import get_current_user
 from services.spark_service import spark_service
 import json
 import asyncio
@@ -13,24 +14,22 @@ router = APIRouter(prefix="/api/assessment", tags=["assessment"])
 
 
 class RecordRequest(BaseModel):
-    user_id: str = "default"
     study_time_minutes: int = 0
     topic: str = ""
     resource_type: str = ""
 
 
 class AssessRequest(BaseModel):
-    user_id: str = "default"
     profile: dict = {}
     study_data: dict = {}
 
 
 @router.get("/")
-async def get_assessment(user_id: str = "default"):
+async def get_assessment(current_user: User = Depends(get_current_user)):
     async with async_session() as session:
         from sqlalchemy import select
         result = await session.execute(
-            select(AssessmentRecord).where(AssessmentRecord.user_id == user_id)
+            select(AssessmentRecord).where(AssessmentRecord.user_id == current_user.username)
             .order_by(AssessmentRecord.created_at.desc()).limit(10)
         )
         records = result.scalars().all()
@@ -52,10 +51,13 @@ async def get_assessment(user_id: str = "default"):
 
 
 @router.post("/record")
-async def record_behavior(req: RecordRequest):
+async def record_behavior(
+    req: RecordRequest,
+    current_user: User = Depends(get_current_user),
+):
     async with async_session() as session:
         record = AssessmentRecord(
-            user_id=req.user_id,
+            user_id=current_user.username,
             study_time_minutes=req.study_time_minutes,
             resource_interactions=1,
         )
@@ -65,7 +67,10 @@ async def record_behavior(req: RecordRequest):
 
 
 @router.post("/generate")
-async def generate_assessment(req: AssessRequest):
+async def generate_assessment(
+    req: AssessRequest,
+    current_user: User = Depends(get_current_user),
+):
     """流式生成学习评估报告"""
     prompt = f"""你是一位学习评估分析师。请根据以下数据生成学习效果评估报告。
 

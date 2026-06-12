@@ -78,7 +78,7 @@ export default function LearningPathPage() {
     setStreamText('');
 
     await generateLearningPathStream(
-      { user_id: 'default', profile: profile || {} },
+      { profile: profile || {} },
       (chunk) => setStreamText((prev) => prev + chunk),
       () => {
         setGenerating(false);

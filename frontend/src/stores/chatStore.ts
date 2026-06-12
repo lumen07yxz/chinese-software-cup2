@@ -10,9 +10,12 @@ export interface Message {
 interface ChatState {
   messages: Message[];
   isStreaming: boolean;
+  conversationId: number | null;
   addMessage: (msg: Omit<Message, 'id' | 'timestamp'>) => void;
   appendToLast: (chunk: string) => void;
   setStreaming: (v: boolean) => void;
+  setConversationId: (id: number | null) => void;
+  loadMessages: (msgs: { role: string; content: string }[]) => void;
   clearMessages: () => void;
 }
 
@@ -21,6 +24,7 @@ let msgId = 0;
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
+  conversationId: null,
 
   addMessage: (msg) => {
     const newMsg: Message = {
@@ -43,5 +47,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setStreaming: (v) => set({ isStreaming: v }),
-  clearMessages: () => set({ messages: [] }),
+
+  setConversationId: (id) => set({ conversationId: id }),
+
+  loadMessages: (msgs) => {
+    const mapped = msgs.map((m, i) => ({
+      id: `msg-${++msgId}`,
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+      timestamp: Date.now() - (msgs.length - i) * 1000,
+    }));
+    set({ messages: mapped });
+  },
+
+  clearMessages: () => set({ messages: [], conversationId: null }),
 }));
