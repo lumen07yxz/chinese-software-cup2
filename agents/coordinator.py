@@ -14,6 +14,7 @@ from typing import AsyncGenerator
 
 from services.spark_service import spark_service
 from services.rag_service import rag_service
+from services.web_search_service import web_search_service
 from services.safety_service import (
     check_safety,
     llm_safety_check,
@@ -95,12 +96,48 @@ class ResourceCoordinator:
         self.resource_type = resource_type
         self.topic = topic
         self.chapter = chapter
-        self.difficulty = difficulty
         self.profile = profile or {}
+        # 自适应难度：优先使用算法计算值，前端传入的 difficulty 作为候选
+        self.difficulty = self._compute_adaptive_difficulty(difficulty)
         self.agent_config = AGENT_REGISTRY.get(resource_type)
         if not self.agent_config:
-            # 默认用 doc_agent
             self.agent_config = AGENT_REGISTRY["doc"]
+
+    def _compute_adaptive_difficulty(self, fallback: float) -> float:
+        """根据学生画像的 knowledge_base 自适应计算难度。
+
+        规则：取 topic/chapter 相关领域的平均掌握度，掌握度越低→难度越低
+        （避免打击初学者），掌握度越高→难度越高（挑战提升）。
+        """
+        kb = self.profile.get("knowledge_base", {})
+        if not kb:
+            return fallback
+
+        # 匹配相关领域
+        scores = []
+        search_key = (self.chapter + self.topic).lower()
+        for domain, score in kb.items():
+            if isinstance(score, (int, float)):
+                # 粗匹配：领域关键词在 search_key 中出现
+                if any(w in search_key for w in domain.lower().split()):
+                    scores.append(float(score))
+                # 模糊匹配：search_key 中任一词在 domain 中出现
+                elif any(kw in domain.lower() for kw in search_key.split()):
+                    scores.append(float(score))
+
+        if not scores:
+            # 取全局平均
+            numeric = [float(v) for v in kb.values() if isinstance(v, (int, float))]
+            if numeric:
+                avg_mastery = sum(numeric) / len(numeric)
+                return max(0.2, min(0.9, 0.3 + avg_mastery * 0.6))
+
+            return fallback
+
+        avg_mastery = sum(scores) / len(scores)
+        # 掌握度 1.0 → 难度 ~0.8（挑战版）
+        # 掌握度 0.0 → 难度 ~0.2（入门版）
+        return max(0.2, min(0.9, 0.2 + avg_mastery * 0.6))
 
     def _emit_status(self, agent_key: str, status: str, message: str) -> dict:
         """构造 agent_status SSE 事件数据"""
@@ -123,6 +160,7 @@ class ResourceCoordinator:
         """编排多 Agent 协作，产出 SSE 事件字符串。"""
         full_output = ""
         self._safety_results: dict = {}  # 供 API 路由读取安全审查结果
+        self._web_context = ""  # 联网搜索缓存
 
         try:
             # ── Step 1: RAG 检索（包装为 Agent 行为）──
@@ -133,17 +171,48 @@ class ResourceCoordinator:
             await asyncio.sleep(0.1)
 
             context = ""
+            user_doc_count = 0
+
+            # 始终在课程知识库中检索（课程库搜索不走语义检索，用 chapter 直接过滤）
             if self.chapter:
-                context = rag_service.get_chapter_context(self.chapter)
-            if not context:
-                results = rag_service.search(self.topic, top_k=5)
-                context = "\n\n".join([r.get("content", "")[:500] for r in results])
+                chapter_context = rag_service.get_chapter_context(self.chapter)
+                if chapter_context:
+                    context = chapter_context
+
+            # 语义检索：同时在课程库和用户文档集合中搜索（来源不限章节）
+            search_results = rag_service.search(self.topic, top_k=10)
+            user_doc_count = sum(1 for r in search_results if r.get('source') == 'user_upload')
+            search_text = "\n\n".join(
+                [r.get("content", "")[:1000] for r in search_results]
+            )
+
+            # 合并课程库章节上下文 + 语义检索结果
+            if context and search_text:
+                context = context + "\n\n---\n\n## 语义检索补充\n\n" + search_text
+            elif search_text:
+                context = search_text
+
+            # Step 1.5: 联网搜索补充
+            # 触发条件：RAG 结果不足 500 字，或没有指定章节（即 AI 搜索出题模式）
+            web_context = ""
+            if len(context) < 500 or not self.chapter:
+                try:
+                    web_results = await web_search_service.search(self.topic, top_k=3)
+                    web_context = "\n\n".join([
+                        f"[网络资料] {r['snippet']}"
+                        for r in web_results if r.get('snippet')
+                    ])[:2000]
+                except Exception:
+                    pass
+            self._web_context = web_context
 
             yield json.dumps(
                 self._emit_status(
                     "rag",
                     "done",
-                    f"检索完成，找到 {len(context)} 字符的相关内容",
+                    f"检索完成，找到 {len(context)} 字符的相关内容"
+                    + (f"（含用户文档 {user_doc_count} 条）" if user_doc_count > 0 else "")
+                    + (" + " + str(len(web_context)) + " 字符网络资料" if web_context else ""),
                 ),
                 ensure_ascii=False,
             ) + "\n\n"
@@ -164,12 +233,12 @@ class ResourceCoordinator:
             analysis = ""
             async for chunk in spark_service.chat_stream(
                 [{"role": "user", "content": orchestrator_prompt}],
-                max_tokens=1024,
+                max_tokens=2048,
             ):
                 analysis += chunk
             # yield analysis text so user sees the orchestration plan
             yield json.dumps(
-                self._emit_text(f"\n> **需求分析：** {analysis[:300]}...\n\n"),
+                self._emit_text(f"\n> **📋 Orchestrator 需求分析：** {analysis[:1000]}\n\n"),
                 ensure_ascii=False,
             ) + "\n\n"
             await asyncio.sleep(0.05)
@@ -180,7 +249,7 @@ class ResourceCoordinator:
             ) + "\n\n"
             await asyncio.sleep(0.05)
 
-            # ── Step 3: 专业 Agent 生成资源 ──
+            # ── Step 3: 专业 Agent 生成资源（携带完整 orchestration 分析）──
             agent_key = self.agent_config["key"]
             agent_name = self.agent_config["name"]
 
@@ -275,7 +344,8 @@ class ResourceCoordinator:
                 self._emit_status(self.agent_config["key"], "error", str(e)),
                 ensure_ascii=False,
             ) + "\n\n"
-            raise
+            # 返回空内容让上层知道失败了（不 raise 避免双重报错）
+            return
 
     def _type_label(self) -> str:
         labels = {
@@ -303,8 +373,11 @@ class ResourceCoordinator:
 **难度**：{self.difficulty}
 **学生画像摘要**：{json.dumps(self.profile, ensure_ascii=False, default=str)[:500]}
 
-**课程参考内容**：
-{context[:1500] if context else "（无）"}
+**课程参考内容（含用户导入文档）**：
+{context[:3000] if context else "（无）"}
+
+**网络补充资料**：
+{self._web_context[:2000] if hasattr(self, '_web_context') and self._web_context else "（无）"}
 
 请输出：
 1. 该知识点的核心重点
@@ -315,7 +388,7 @@ class ResourceCoordinator:
     def _build_agent_prompt(self, context: str, analysis: str) -> str:
         """使用专业 Agent 的角色定义构建内容生成 prompt"""
         agent = self.agent_config
-        return f"""{agent['role']}
+        prompt = f"""{agent['role']}
 
 {agent['goal']}
 
@@ -327,11 +400,34 @@ class ResourceCoordinator:
 **难度**：{self.difficulty}
 **学生画像摘要**：{json.dumps(self.profile, ensure_ascii=False, default=str)[:500]}
 
-**需求分析结论**：
-{analysis[:500]}
+**需求分析结论（完整）**：
+{analysis[:2000]}
 
-**课程参考资料**：
-{context[:2000] if context else "（无）"}
+**课程参考资料（含用户导入文档）**：
+{context[:3000] if context else "（无）"}
+
+**网络补充资料（最新信息）**：
+{self._web_context[:2000] if self._web_context else "（无）"}
 
 请严格按照你的角色定位生成高质量的{self._type_label()}。使用 Markdown 格式输出，支持 LaTeX 公式（$...$ 或 $$...$$）。
 """
+        # quiz 类型追加 JSON 输出模板（不能用 f-string 内嵌，{} 会冲突）
+        if self.resource_type == "quiz":
+            prompt += """**请输出以下 JSON 数组格式（不要用 Markdown 列表），每题一个对象：**
+```json
+[
+  {
+    "question": "题目内容",
+    "options": ["A. 选项1", "B. 选项2", "C. 选项3", "D. 选项4"],
+    "correct": 0,
+    "explanation": "解析说明"
+  }
+]
+```
+**注意：不要省略 JSON 代码块标记 ```json 和 ```**
+"""
+            # AI 搜索出题模式：额外提示
+            if not self.chapter:
+                prompt += "**本次为自由知识点出题，请结合课程资料和网络资料，生成 5-10 道覆盖该知识点核心概念的练习题，从基础概念到进阶应用逐步递进。**\n"
+        prompt += "**注意：不要引用外部图片链接（如图床、CDN），如需配图请使用表格、ASCII 图表或文字描述代替。**\n"
+        return prompt

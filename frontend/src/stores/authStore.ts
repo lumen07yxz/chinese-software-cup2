@@ -14,10 +14,24 @@ interface AuthState {
   loadFromStorage: () => void;
 }
 
+/** 同步读取 localStorage，避免首屏渲染时 isAuthenticated=false 导致闪跳登录页 */
+function readInitialAuth(): { token: string | null; user: AuthUser | null } {
+  try {
+    const token = localStorage.getItem('auth_token');
+    const userStr = localStorage.getItem('auth_user');
+    if (token && userStr) {
+      return { token, user: JSON.parse(userStr) };
+    }
+  } catch { /* corrupted storage, ignore */ }
+  return { token: null, user: null };
+}
+
+const initial = readInitialAuth();
+
 export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  token: null,
-  isAuthenticated: false,
+  user: initial.user,
+  token: initial.token,
+  isAuthenticated: !!initial.token,
 
   login: (token, user) => {
     localStorage.setItem('auth_token', token);

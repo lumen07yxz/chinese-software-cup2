@@ -80,36 +80,27 @@ async def chat_stream(
                 "learning_goal": db_profile.learning_goal,
                 "available_time": db_profile.available_time,
                 "interests": db_profile.interests,
+                "conversation_summary": db_profile.conversation_summary,
             }
 
     # 构建消息列表（history 不含当前消息，无重复）
     messages = list(history) + [{"role": "user", "content": message}]
 
     # 构建带上下文的系统提示词
-    system_prompt_content = build_system_prompt(existing_profile, db_profile)
+    system_prompt_content = build_system_prompt(existing_profile, db_profile, message)
     system_prompt = {"role": "system", "content": system_prompt_content}
     full_messages = [system_prompt] + messages
 
     async def generate():
         conversation_text = ""
         try:
-            # 保存用户消息到数据库
-            async with async_session() as session:
-                user_msg = ConversationMessage(
-                    conversation_id=conversation_id,
-                    role="user",
-                    content=message,
-                )
-                session.add(user_msg)
-                await session.commit()
-
-            # 流式输出 AI 回复
-            async for chunk in spark_service.chat_stream(full_messages):
-                conversation_text += chunk
-                yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+            # 流式调用 LLM
+            async for content_chunk in spark_service.chat_stream(full_messages):
+                conversation_text += content_chunk
+                yield f"data: {json.dumps({'type': 'text', 'content': content_chunk})}\n\n"
                 await asyncio.sleep(0.01)
 
-            # 保存助手回复到数据库
+            # 保存助手回复 + 画像（合并为单 session，#13）
             async with async_session() as session:
                 assistant_msg = ConversationMessage(
                     conversation_id=conversation_id,
@@ -119,19 +110,24 @@ async def chat_stream(
                 session.add(assistant_msg)
                 await session.commit()
 
-            # 提取画像并自动保存
-            profile = await ProfileCoordinator.extract(
-                user_message=message,
-                conversation_history=messages,
-                existing_profile=existing_profile,
-            )
-
-            if profile:
-                await _save_profile(user_id, profile)
-                yield (
-                    f"data: {json.dumps({'type': 'profile_update', 'data': profile})}\n\n"
+            # D48: 根据画像完整度动态调整提取频率
+            user_msg_count = sum(1 for m in history if m.get("role") == "user") + 1
+            profile_completeness = 0
+            if existing_profile:
+                fields = ["knowledge_base", "cognitive_style", "weak_points", "learning_goal", "interests"]
+                profile_completeness = sum(1 for f in fields if existing_profile.get(f)) / len(fields)
+            extract_interval = 1 if profile_completeness < 0.6 else 5
+            should_extract = not db_profile or user_msg_count % extract_interval == 0
+            if should_extract:
+                profile = await ProfileCoordinator.extract(
+                    user_message=message,
+                    conversation_history=messages,
+                    existing_profile=existing_profile,
                 )
-                await asyncio.sleep(0.01)
+                if profile:
+                    await _save_profile(user_id, profile)
+                    yield f"data: {json.dumps({'type': 'profile_update', 'data': profile})}\n\n"
+                    await asyncio.sleep(0.01)
 
             # 返回 conversation_id 供前端使用
             yield (
@@ -149,6 +145,7 @@ async def chat_stream(
 def build_system_prompt(
     profile: dict | None,
     db_profile: StudentProfile | None,
+    user_message: str = "",
 ) -> str:
     """构建注入画像和对话摘要的系统提示词"""
     base = (
@@ -188,6 +185,21 @@ def build_system_prompt(
         base += f"\n\n之前的对话摘要：{db_profile.conversation_summary}"
 
     base += "\n\n请根据以上信息，避免重复询问已知内容，有针对性地引导学生。"
+
+    # 指导 AI 输出推荐回复按钮（D46: 严格个性化，禁止通用推荐）
+    base += (
+        "\n\n重要：在回复的最后，用「」括起2-3个学生可能想问的后续问题，"
+        "例如：\n"
+        "「能具体解释一下反向传播吗」\n"
+        "「帮我出一道练习题」\n"
+        "这些会显示为按钮供学生点击。\n"
+        "【个性化要求】必须根据学生画像生成差异化推荐：\n"
+        "- 有 weak_points → 针对薄弱环节推荐复习/练习（如薄弱点是CNN，则推荐「帮我巩固CNN的池化层原理」）\n"
+        "- 有 interests → 结合兴趣方向推荐深入学习（如兴趣是NLP，则推荐「介绍一下Transformer在NLP中的应用」）\n"
+        "- 有 knowledge_base → 根据掌握度调整难度（基础弱则推荐基础概念，基础强则推荐拓展/应用）\n"
+        "- 绝对禁止每次给出「推荐一些学习资源」「帮我规划学习路径」等通用内容\n"
+        "- 每个追问必须与当前对话内容直接相关，不能脱离上下文"
+    )
     return base
 
 

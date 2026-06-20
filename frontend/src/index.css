@@ -12,6 +12,24 @@
   --color-surface: #FFFFFF;
 }
 
+/* H45 暗黑模式：通过 html.dark 类切换 */
+html.dark {
+  --color-cream: #1E1E1E;
+  --color-warm-white: #121212;
+  --color-ink: #E8E4DF;
+  --color-ink-light: #D4D0CB;
+  --color-amber: #D99B5E;
+  --color-amber-light: #E8B07A;
+  --color-border: #333333;
+  --color-muted: #8B8580;
+  --color-surface: #1E1E1E;
+}
+html.dark body { background-color: #121212; color: #E8E4DF; }
+html.dark input, html.dark textarea, html.dark select { background-color: #1E1E1E; color: #E8E4DF; border-color: #333; }
+html.dark .bg-white { background-color: #1E1E1E; }
+html.dark pre[class*="language-"] { background: #1a1a1a !important; border-color: #333; }
+html.dark .mermaid-block { background: #1a1a1a; border-color: #333; }
+
 body {
   margin: 0;
   background-color: var(--color-warm-white);
@@ -29,10 +47,82 @@ body {
 
 .katex { font-size: 1.05em !important; }
 
+/* rehype-prism-plus overrides */
 pre[class*="language-"] {
   border-radius: 8px;
   border: 1px solid var(--color-border);
   background: #f8f7f5 !important;
+  padding: 1em;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-x: auto;
+}
+
+code[class*="language-"] {
+  font-size: 13px;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+}
+
+/* Inline code */
+:not(pre) > code {
+  background: #f0ece7;
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  font-size: 0.9em;
+  color: #2D4A3E;
+}
+
+/* Prism token colors */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata { color: #8B8580; }
+.token.punctuation { color: #6b7280; }
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted { color: #C77D43; }
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted { color: #0F766E; }
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string { color: #78716C; }
+.token.atrule,
+.token.attr-value,
+.token.keyword { color: #2D4A3E; font-weight: 500; }
+.token.function,
+.token.class-name { color: #8B5CF6; }
+.token.regex,
+.token.important,
+.token.variable { color: #D97706; }
+
+/* Line numbers (rehype-prism-plus) */
+.line-numbers .line-numbers-rows {
+  border-right-color: var(--color-border);
+}
+
+/* Mermaid container */
+.mermaid-block {
+  background: #fafaf9;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid-block svg {
+  max-width: 100%;
+  height: auto;
 }
 
 /* Scrollbar */
@@ -40,3 +130,34 @@ pre[class*="language-"] {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #d4d0cb; border-radius: 10px; }
 ::-webkit-scrollbar-thumb:hover { background: #b0aba5; }
+
+/* Page transition animation */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ====== 打印 / PDF 导出样式 ====== */
+@media print {
+  html, body { height: auto; overflow: visible; }
+  body * { visibility: hidden; }
+  .print-area, .print-area * { visibility: visible; }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 2rem 1.5rem !important;
+    overflow: visible;
+    background: #ffffff;
+  }
+  .print-area .katex { font-size: 1.05em !important; }
+  .print-area pre,
+  .print-area svg,
+  .print-area img {
+    page-break-inside: avoid;
+    max-width: 100%;
+  }
+  .no-print { display: none !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

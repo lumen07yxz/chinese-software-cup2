@@ -8,3 +8,11 @@ data/
 _test_*.py
 !start_backend.bat
 !start_backend.sh
+backend.log
+.vscode/
+backend_files.txt
+frontend_ts.txt
+frontend_tsx.txt
+new.md
+package.json
+package-lock.json

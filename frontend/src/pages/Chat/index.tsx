@@ -8,10 +8,65 @@ import {
   sendChatMessage,
   fetchConversations,
   fetchConversationMessages,
-  createConversation,
   deleteConversation,
   type ConversationItem,
 } from '../../services/api';
+
+/**
+ * 从最后一条助手消息中提取带「」或 "" 包裹的建议回复
+ */
+function extractSuggestions(text: string): string[] {
+  const items: string[] = [];
+  // Match 「...」 or "..." patterns
+  const patterns = [
+    ...text.matchAll(/「([^」]+)」/g),
+    ...text.matchAll(/"([^"]{2,40})"/g),
+  ];
+  for (const m of patterns) {
+    if (!items.includes(m[1])) items.push(m[1]);
+  }
+  return items.slice(0, 4);
+}
+
+/**
+ * 根据画像生成个性化的初始提示按钮
+ */
+function getPersonalizedHints(profile: Record<string, unknown> | null): string[] {
+  if (!profile) return ['我是计算机专业大二学生', '我想系统学习深度学习', '我对NLP很感兴趣', '我是零基础初学者'];
+
+  const hints: string[] = [];
+  const goal = profile.learning_goal as string;
+  const interests = profile.interests as string[];
+  const kb = profile.knowledge_base as Record<string, number>;
+
+  if (goal) {
+    hints.push(`我正在学习${goal}`);
+  } else {
+    hints.push('告诉我你的专业和年级');
+  }
+
+  if (interests && interests.length > 0) {
+    hints.push(`我想深入${interests[0]}`);
+  } else {
+    hints.push('你对哪些方向感兴趣');
+  }
+
+  // Check if there are weak points
+  if (kb && Object.keys(kb).length > 0) {
+    // Find the weakest area
+    const weakest = Object.entries(kb).sort((a, b) => a[1] - b[1])[0];
+    if (weakest && weakest[1] < 0.5) {
+      hints.push(`帮我巩固${weakest[0]}`);
+    } else {
+      hints.push('推荐一些进阶内容');
+    }
+  } else {
+    hints.push('推荐适合初学者的资源');
+  }
+
+  hints.push('帮我规划学习路径');
+  return hints.slice(0, 4);
+}
 
 export default function ChatPage() {
   const {
@@ -22,6 +77,11 @@ export default function ChatPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestionsVisible, setSuggestionsVisible] = useState(false);
+
+  // Personalized hint buttons based on profile
+  const hints = getPersonalizedHints(profile as unknown as Record<string, unknown> | null);
 
   // 加载对话列表
   const loadConvList = useCallback(async () => {
@@ -70,6 +130,10 @@ export default function ChatPage() {
   const handleSend = useCallback(async (text: string) => {
     if (isStreaming) return;
 
+    // Clear previous suggestions when sending new message
+    setSuggestions([]);
+    setSuggestionsVisible(false);
+
     addMessage({ role: 'user', content: text });
     setStreaming(true);
     addMessage({ role: 'assistant', content: '' });
@@ -82,6 +146,14 @@ export default function ChatPage() {
         setConversationId(newConvId);
         setStreaming(false);
         loadConvList(); // 刷新对话列表
+        // Extract suggestions from the last assistant message
+        const msgs = useChatStore.getState().messages;
+        const lastMsg = msgs.filter(m => m.role === 'assistant').pop();
+        if (lastMsg) {
+          const extracted = extractSuggestions(lastMsg.content);
+          setSuggestions(extracted);
+          setSuggestionsVisible(extracted.length > 0);
+        }
       },
       (err) => {
         appendToLast(`\n\n> 出错了: ${err}`);
@@ -91,7 +163,7 @@ export default function ChatPage() {
         if (type === 'profile_update') {
           const profileData = (data as Record<string, unknown>).data as Record<string, unknown>;
           if (profileData && (profileData.knowledge_base || profileData.cognitive_style)) {
-            setProfile(profileData as Parameters<typeof setProfile>[0]);
+            setProfile(profileData as unknown as Parameters<typeof setProfile>[0]);
           }
         }
       },
@@ -170,7 +242,8 @@ export default function ChatPage() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5">
+          <div className="max-w-3xl mx-auto">
           {messages.length === 0 && (
             <div className="text-center mt-20">
               <div className="w-14 h-14 mx-auto mb-4 rounded-xl bg-cream flex items-center justify-center">
@@ -183,7 +256,7 @@ export default function ChatPage() {
                 告诉我你的专业、学过的课程、想达成的目标、每周有多少学习时间，我会帮你打造专属学习方案。
               </p>
               <div className="mt-6 flex flex-wrap gap-2 justify-center">
-                {['我是计算机专业大二学生', '我想系统学习深度学习', '我对NLP很感兴趣', '我是零基础初学者'].map((hint) => (
+                {hints.map((hint) => (
                   <button
                     key={hint}
                     onClick={() => handleSend(hint)}
@@ -198,19 +271,39 @@ export default function ChatPage() {
             </div>
           )}
 
-          {messages.map((msg) => (
-            <ChatBubble
-              key={msg.id}
-              message={msg}
-              isStreaming={isStreaming && msg === messages[messages.length - 1] && msg.role === 'assistant'}
-            />
+          {messages.map((msg, idx) => (
+            <div key={msg.id}>
+              <ChatBubble
+                message={msg}
+                isStreaming={isStreaming && msg === messages[messages.length - 1] && msg.role === 'assistant'}
+              />
+              {/* Suggested reply buttons after assistant messages (non-streaming) */}
+              {msg.role === 'assistant' && !isStreaming && suggestions.length > 0 && suggestionsVisible && idx === messages.length - 1 && (
+                <div className="flex flex-wrap gap-2 mt-2 mb-4 ml-12 animate-[fadeIn_0.3s_ease-out]">
+                  {suggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => {
+                        setSuggestionsVisible(false);
+                        handleSend(s);
+                      }}
+                      className="px-3 py-1.5 text-[12px] text-ink bg-cream border border-border/60 rounded-full
+                        hover:bg-ink hover:text-warm-white transition-all"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
           <div ref={chatEndRef} />
+          </div>
         </div>
 
         {/* Input */}
-        <div className="flex-shrink-0 px-6 py-4 border-t border-border bg-surface/50">
-          <div className="max-w-2xl">
+        <div className="flex-shrink-0 px-4 md:px-6 py-4 border-t border-border bg-surface/50">
+          <div className="max-w-3xl mx-auto">
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </div>
         </div>

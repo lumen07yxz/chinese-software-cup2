@@ -1,9 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { fetchLearningPath, generateLearningPathStream } from '../../services/api';
+import CodeBlock from '../../components/CodeBlock';
+import { fetchLearningPath, generateLearningPathStream, toggleNodeComplete as apiToggleNode } from '../../services/api';
 import { useProfileStore } from '../../stores/profileStore';
+import DependencyGraph from './DependencyGraph';
+import NodeDetailPanel from './NodeDetailPanel';
+import { getNodeStatus } from './nodeStatus';
+import { downloadText } from '../../utils/export';
 
 interface PathNode {
   id: string;
@@ -11,6 +18,9 @@ interface PathNode {
   duration: string;
   priority: number;
   description: string;
+  goals: string;
+  key_concepts: string[];
+  difficulty: number;
 }
 
 interface PathEdge {
@@ -29,24 +39,19 @@ interface SavedPath {
   data: PathData;
   current_node: string;
   progress: number;
+  completed_nodes: string[];
   updated_at: string;
 }
 
-const CHAPTER_COLORS = [
-  'bg-ink', 'bg-ink-light', 'bg-amber', 'bg-amber-light',
-  'bg-emerald-700', 'bg-teal-600', 'bg-stone-500', 'bg-zinc-500',
-];
-
-const CHAPTER_ORDER = [
-  'ch01', 'ch02', 'ch03', 'ch04', 'ch05', 'ch06', 'ch07', 'ch08', 'ch09', 'ch10',
-];
-
 export default function LearningPathPage() {
+  const navigate = useNavigate();
   const [savedPath, setSavedPath] = useState<SavedPath | null>(null);
   const [generating, setGenerating] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [activeTab, setActiveTab] = useState<'timeline' | 'graph'>('timeline');
   const [completedNodes, setCompletedNodes] = useState<Set<string>>(new Set());
+  const [streamExpanded, setStreamExpanded] = useState(false);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const { profile } = useProfileStore();
   const streamEndRef = useRef<HTMLDivElement>(null);
 
@@ -68,7 +73,13 @@ export default function LearningPathPage() {
   const loadSavedPath = async () => {
     try {
       const data = await fetchLearningPath();
-      if (data.path) setSavedPath(data.path);
+      if (data.path) {
+        setSavedPath(data.path);
+        if (data.path.completed_nodes) {
+          setCompletedNodes(new Set(data.path.completed_nodes));
+          localStorage.setItem('learning-path-completed', JSON.stringify(data.path.completed_nodes));
+        }
+      }
     } catch { /* ignore */ }
   };
 
@@ -76,22 +87,42 @@ export default function LearningPathPage() {
     if (generating) return;
     setGenerating(true);
     setStreamText('');
+    setStreamExpanded(false);
 
-    await generateLearningPathStream(
-      { profile: profile || {} },
-      (chunk) => setStreamText((prev) => prev + chunk),
-      () => {
-        setGenerating(false);
-        loadSavedPath();
-      },
-      (err) => {
-        setStreamText((prev) => prev + `\n\n> ❌ 出错了: ${err}`);
-        setGenerating(false);
-      },
-    );
+    try {
+      await generateLearningPathStream(
+        { profile: profile || {} },
+        (chunk) => setStreamText((prev) => prev + chunk),
+        () => {
+          setGenerating(false);
+          loadSavedPath();
+        },
+        (err) => {
+          setStreamText((prev) => prev + `\n\n> ❌ 出错了: ${err}`);
+          setGenerating(false);
+        },
+        (pathData: Record<string, unknown>) => {
+          // 算法路径骨架到达后即刻渲染 timeline/graph 视图
+          const data = pathData as unknown as PathData;
+          if (!data.nodes) return;
+          setSavedPath({
+            data,
+            current_node: data.nodes[0].id,
+            completed_nodes: [],
+            progress: 0,
+            updated_at: new Date().toISOString(),
+          });
+        },
+      );
+    } catch (e: unknown) {
+      // 401 等错误会被 apiFetch 拦截并跳转登录页，这里兜底其他异常
+      const msg = e instanceof Error ? e.message : '网络错误';
+      setStreamText((prev) => prev || `\n\n> ❌ ${msg}`);
+      setGenerating(false);
+    }
   }, [generating, profile]);
 
-  const toggleNodeComplete = (nodeId: string) => {
+  const handleToggleComplete = async (nodeId: string) => {
     setCompletedNodes((prev) => {
       const next = new Set(prev);
       if (next.has(nodeId)) next.delete(nodeId);
@@ -99,6 +130,7 @@ export default function LearningPathPage() {
       localStorage.setItem('learning-path-completed', JSON.stringify([...next]));
       return next;
     });
+    try { await apiToggleNode(nodeId); } catch { /* fallback to localStorage */ }
   };
 
   const pathData: PathData | null = savedPath?.data || null;
@@ -106,6 +138,32 @@ export default function LearningPathPage() {
   // Calculate progress
   const totalNodes = pathData?.nodes.length || 0;
   const completedCount = completedNodes.size;
+
+  // 导出学习路径为 Markdown 大纲
+  const handleExportOutline = () => {
+    if (!pathData) return;
+    const lines: string[] = ['# 个性化学习路径', ''];
+    if (savedPath) {
+      lines.push(
+        `> 当前进度：${Math.round((savedPath.progress || 0) * 100)}% | 已完成：${completedCount}/${totalNodes} | 更新时间：${savedPath.updated_at || ''}`,
+        '',
+      );
+    }
+    pathData.nodes.forEach((n, i) => {
+      const done = completedNodes.has(n.id) ? '✅' : '⬜';
+      lines.push(`## ${i + 1}. ${done} ${n.title}`);
+      lines.push(`- 难度：${Math.round((n.difficulty || 0) * 100)}% | 预计时长：${n.duration || '未指定'} | 优先级：${'★'.repeat(Math.max(1, n.priority || 1))}`);
+      if (n.goals) lines.push(`- 学习目标：${n.goals}`);
+      if (n.key_concepts?.length) lines.push(`- 关键概念：${n.key_concepts.join('、')}`);
+      if (n.description) lines.push(`- ${n.description}`);
+      lines.push('');
+    });
+    if (pathData.suggestions?.length) {
+      lines.push('## 学习建议');
+      pathData.suggestions.forEach((s) => lines.push(`- ${s}`));
+    }
+    downloadText('学习路径.md', lines.join('\n'));
+  };
 
   // --- Render ---
   return (
@@ -121,28 +179,45 @@ export default function LearningPathPage() {
                 根据你的画像和知识掌握情况，规划科学、动态的个性化学习路径
               </p>
             </div>
-            <button
-              onClick={handleGenerate}
-              disabled={generating}
-              className="px-5 py-2 bg-ink text-warm-white text-[13px] rounded-md hover:bg-ink-light transition-colors disabled:opacity-50 flex items-center gap-2"
-            >
-              {generating ? (
-                <>
-                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none" strokeDasharray="32" strokeLinecap="round" />
+            <div className="flex items-center gap-2">
+              {pathData && (
+                <button
+                  onClick={handleExportOutline}
+                  disabled={generating}
+                  title="导出学习路径为 Markdown 大纲"
+                  className="px-4 py-2 bg-surface text-ink text-[13px] rounded-md border border-border hover:border-ink/40 transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
                   </svg>
-                  生成中...
-                </>
-              ) : (
-                <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <polyline points="23 4 23 10 17 10" />
-                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                  </svg>
-                  {savedPath ? '重新规划' : '生成学习路径'}
-                </>
+                  导出大纲
+                </button>
               )}
-            </button>
+              <button
+                onClick={handleGenerate}
+                disabled={generating}
+                className="px-5 py-2 bg-ink text-warm-white text-[13px] rounded-md hover:bg-ink-light transition-colors disabled:opacity-50 flex items-center gap-2"
+              >
+                {generating ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none" strokeDasharray="32" strokeLinecap="round" />
+                    </svg>
+                    生成中...
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <polyline points="23 4 23 10 17 10" />
+                      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                    </svg>
+                    {savedPath ? '重新规划' : '生成学习路径'}
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Progress bar */}
@@ -168,7 +243,12 @@ export default function LearningPathPage() {
               {(['timeline', 'graph'] as const).map((tab) => (
                 <button
                   key={tab}
-                  onClick={() => setActiveTab(tab)}
+                  onClick={() => {
+                    setActiveTab(tab);
+                    // 切换时滚动到顶部
+                    const container = document.querySelector('.flex-1.overflow-y-auto');
+                    if (container) container.scrollTop = 0;
+                  }}
                   className={`px-4 py-2.5 text-[13px] border-b-2 transition-colors ${
                     activeTab === tab
                       ? 'border-ink text-ink font-medium'
@@ -206,7 +286,7 @@ export default function LearningPathPage() {
             </div>
           )}
 
-          {/* Generating stream */}
+          {/* Generating stream — full height during generation */}
           {generating && streamText && (
             <div className="max-w-3xl mx-auto">
               <div className="flex items-center gap-2 mb-4">
@@ -214,12 +294,57 @@ export default function LearningPathPage() {
                 <span className="text-sm text-muted">AI 正在为你规划学习路径...</span>
               </div>
               <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
+                  components={{
+                    code: CodeBlock,
+                    img: ({ src, alt }: { src?: string; alt?: string }) => {
+                      if (!src || (!src.startsWith('/') && !src.startsWith('data:'))) return null
+                      return <img src={src} alt={alt} className="max-w-full rounded" />
+                    },
+                  }}
+                >
                   {streamText}
                 </ReactMarkdown>
                 <span className="inline-block w-1.5 h-4 bg-amber animate-pulse ml-0.5" />
               </div>
               <div ref={streamEndRef} />
+            </div>
+          )}
+
+          {/* Post-generation collapsible stream — does not obscure graph */}
+          {!generating && streamText && pathData && (
+            <div className="max-w-3xl mx-auto mb-4">
+              <button
+                onClick={() => setStreamExpanded((v) => !v)}
+                className="flex items-center gap-2 text-[13px] text-muted hover:text-ink transition-colors"
+              >
+                <svg
+                  width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  className={`transition-transform duration-200 ${streamExpanded ? 'rotate-90' : ''}`}
+                >
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+                {streamExpanded ? '收起规划说明' : '查看详细规划说明'}
+              </button>
+              {streamExpanded && (
+                <div className="mt-3 p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={{
+                      code: CodeBlock,
+                      img: ({ src, alt }: { src?: string; alt?: string }) => {
+                        if (!src || (!src.startsWith('/') && !src.startsWith('data:'))) return null
+                        return <img src={src} alt={alt} className="max-w-full rounded" />
+                      },
+                    }}
+                  >
+                    {streamText}
+                  </ReactMarkdown>
+                </div>
+              )}
             </div>
           )}
 
@@ -231,16 +356,17 @@ export default function LearningPathPage() {
                 <div className="absolute left-[19px] top-0 bottom-0 w-0.5 bg-border" />
 
                 <div className="space-y-0">
-                  {CHAPTER_ORDER.map((chId, idx) => {
-                    const node = pathData.nodes?.find((n) => n.id === chId);
-                    if (!node) return null;
+                  {(pathData.nodes || []).map((node, idx) => {
                     const isComplete = completedNodes.has(node.id);
                     const priority = node.priority || 5;
+                    const nodeEdges = pathData.edges || [];
+                    const status = getNodeStatus(node.id, completedNodes, nodeEdges);
+                    const statusIcon = status === 'completed' ? '✅' : status === 'recommended' ? '🔴' : status === 'skippable' ? '⏭' : '⚪';
 
                     return (
                       <div
                         key={node.id}
-                        onClick={() => toggleNodeComplete(node.id)}
+                        onClick={() => handleToggleComplete(node.id)}
                         className="relative flex items-start gap-5 pb-8 cursor-pointer group"
                       >
                         {/* Timeline dot */}
@@ -256,7 +382,7 @@ export default function LearningPathPage() {
                               <polyline points="20 6 9 17 4 12" />
                             </svg>
                           ) : (
-                            <span className={`text-sm font-semibold ${CHAPTER_COLORS[idx % CHAPTER_COLORS.length].replace('bg-', 'text-')}`}>
+                            <span className={`text-sm font-semibold text-ink`}>
                               {String(idx + 1).padStart(2, '0')}
                             </span>
                           )}
@@ -274,13 +400,40 @@ export default function LearningPathPage() {
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <h3 className={`text-base font-medium ${isComplete ? 'text-muted line-through' : 'text-ink'}`}>
-                                  {node.title}
+                                  {statusIcon} {node.title}
                                 </h3>
                                 {isComplete && (
                                   <span className="text-[11px] px-1.5 py-0.5 bg-ink/10 text-ink rounded-full">已完成</span>
                                 )}
                               </div>
                               <p className="text-[13px] text-muted mt-1">{node.description}</p>
+                              {node.goals && (
+                                <p className="text-[12px] text-muted mt-2">🎯 {node.goals}</p>
+                              )}
+                              {node.key_concepts && node.key_concepts.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 mt-2">
+                                  {node.key_concepts.map((concept) => (
+                                    <span key={concept} className="text-[11px] px-2 py-0.5 bg-cream rounded-full text-muted">
+                                      {concept}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              {typeof node.difficulty === 'number' && (
+                                <div className="flex items-center gap-2 mt-2">
+                                  <span className="text-[11px] text-muted">难度</span>
+                                  <div className="flex-1 h-1.5 bg-cream rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full rounded-full transition-all"
+                                      style={{
+                                        width: `${node.difficulty * 100}%`,
+                                        backgroundColor: node.difficulty >= 0.6 ? '#EF4444' : node.difficulty >= 0.4 ? '#C77D43' : '#2D4A3E',
+                                      }}
+                                    />
+                                  </div>
+                                  <span className="text-[11px] text-muted">{Math.round(node.difficulty * 100)}%</span>
+                                </div>
+                              )}
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
                               <span className="text-[12px] px-2 py-0.5 bg-cream rounded-full text-muted whitespace-nowrap">
@@ -308,8 +461,13 @@ export default function LearningPathPage() {
           {pathData && !generating && activeTab === 'graph' && (
             <div className="max-w-4xl mx-auto">
               <p className="text-sm text-muted mb-4">节点依赖关系图 — 箭头表示前置知识依赖</p>
-              <DependencyGraph nodes={pathData.nodes || []} edges={pathData.edges || []} completedNodes={completedNodes} />
-            </div>
+              <DependencyGraph
+                nodes={pathData.nodes || []}
+                edges={pathData.edges || []}
+                completedNodes={[...completedNodes]}
+                selectedNode={selectedNode}
+                onNodeClick={(id) => setSelectedNode(id === selectedNode ? null : id)}
+              />            </div>
           )}
 
           {/* Suggestions */}
@@ -333,6 +491,19 @@ export default function LearningPathPage() {
                   </div>
                 ))}
               </div>
+
+          {/* Node detail panel */}
+          <NodeDetailPanel
+            node={(pathData?.nodes || []).find(n => n.id === selectedNode) || null}
+            completedNodes={[...completedNodes]}
+            edges={pathData?.edges || []}
+            onClose={() => setSelectedNode(null)}
+            onToggleComplete={handleToggleComplete}
+            onStartChapterQuiz={(chapter) => {
+              setSelectedNode(null);
+              navigate(`/quiz?chapter=${chapter}`);
+            }}
+          />
             </div>
           )}
         </div>
@@ -343,143 +514,3 @@ export default function LearningPathPage() {
 
 /* ─── Dependency graph component ─── */
 
-function DependencyGraph({
-  nodes,
-  edges,
-  completedNodes,
-}: {
-  nodes: PathNode[];
-  edges: PathEdge[];
-  completedNodes: Set<string>;
-}) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [dimensions, setDimensions] = useState({ w: 800, h: 500 });
-
-  useEffect(() => {
-    const updateSize = () => {
-      if (containerRef.current) {
-        setDimensions({
-          w: containerRef.current.clientWidth,
-          h: Math.max(500, containerRef.current.clientHeight),
-        });
-      }
-    };
-    updateSize();
-    window.addEventListener('resize', updateSize);
-    return () => window.removeEventListener('resize', updateSize);
-  }, []);
-
-  // Layout: use fixed positions based on chapter order
-  const nodePositions = useRef<Map<string, { x: number; y: number }>>(new Map());
-  const n = nodes.length;
-  const centerX = dimensions.w / 2;
-  const centerY = dimensions.h / 2;
-  const radius = Math.min(dimensions.w, dimensions.h) * 0.33;
-
-  nodes.forEach((node, i) => {
-    if (!nodePositions.current.has(node.id)) {
-      const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
-      nodePositions.current.set(node.id, {
-        x: centerX + radius * Math.cos(angle),
-        y: centerY + radius * Math.sin(angle),
-      });
-    }
-  });
-
-  const getNodeColor = (id: string): string => {
-    const idx = nodes.findIndex((n) => n.id === id);
-    const colors = ['#2D4A3E', '#3D5A4E', '#C77D43', '#D99B5E', '#0F766E', '#0D9488', '#78716C', '#71717A', '#2D4A3E', '#3D5A4E'];
-    return colors[idx % colors.length];
-  };
-
-  return (
-    <div ref={containerRef} className="w-full h-[520px] bg-surface border border-border rounded-lg overflow-hidden">
-      <svg ref={svgRef} width={dimensions.w} height={dimensions.h} className="w-full h-full">
-        {/* Background grid */}
-        <defs>
-          <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
-            <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#F0EDE8" strokeWidth="0.5" />
-          </pattern>
-        </defs>
-        <rect width={dimensions.w} height={dimensions.h} fill="url(#grid)" />
-
-        {/* Edges */}
-        {edges.map((edge) => {
-          const from = nodePositions.current.get(edge.from);
-          const to = nodePositions.current.get(edge.to);
-          if (!from || !to) return null;
-          const midX = (from.x + to.x) / 2;
-          const midY = (from.y + to.y) / 2 - 14;
-
-          return (
-            <g key={`${edge.from}-${edge.to}`}>
-              {/* Arrow line */}
-              <line
-                x1={from.x} y1={from.y} x2={to.x} y2={to.y}
-                stroke="#D4D0CB" strokeWidth="1.5" strokeDasharray="4,3"
-              />
-              {/* Arrow head */}
-              <polygon
-                points={`${to.x},${to.y} ${to.x - 8},${to.y - 5} ${to.x - 8},${to.y + 5}`}
-                fill="#D4D0CB"
-                transform={`rotate(${Math.atan2(to.y - from.y, to.x - from.x) * 180 / Math.PI}, ${to.x}, ${to.y})`}
-              />
-              {/* Edge label */}
-              <text x={midX} y={midY} textAnchor="middle" fill="#8B8580" fontSize="11" fontFamily="sans-serif">
-                {edge.label}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* Nodes */}
-        {nodes.map((node) => {
-          const pos = nodePositions.current.get(node.id);
-          if (!pos) return null;
-          const isComplete = completedNodes.has(node.id);
-          const color = getNodeColor(node.id);
-
-          return (
-            <g key={node.id}>
-              {/* Connection line from center */}
-              <line x1={centerX} y1={centerY} x2={pos.x} y2={pos.y} stroke="#EDE8E3" strokeWidth="1" />
-              {/* Node circle */}
-              <circle
-                cx={pos.x} cy={pos.y} r="28"
-                fill={isComplete ? color : '#FFFFFF'}
-                stroke={color}
-                strokeWidth="2"
-                opacity={isComplete ? 0.9 : 1}
-              />
-              {isComplete && (
-                <text x={pos.x} y={pos.y + 1} textAnchor="middle" fill="#FFFFFF" fontSize="16">✓</text>
-              )}
-              <text x={pos.x} y={pos.y + 48} textAnchor="middle" fill="#2D4A3E" fontSize="11" fontFamily="sans-serif" fontWeight="500">
-                {node.title.length > 8 ? node.title.slice(0, 7) + '…' : node.title}
-              </text>
-              {/* Duration badge — 放在节点圆圈上方 */}
-              {node.duration && (
-                <g>
-                  <rect x={pos.x - 20} y={pos.y - 32} width="40" height="14" rx="7" fill="#F5F0EB" />
-                  <text x={pos.x} y={pos.y - 22} textAnchor="middle" fill="#8B8580" fontSize="9" fontFamily="sans-serif">
-                    {node.duration}
-                  </text>
-                </g>
-              )}
-
-              {/* Title — 放在节点圆圈下方，与上方 badge 不再重叠 */}
-              <text x={pos.x} y={pos.y + 48} textAnchor="middle" fill="#2D4A3E" fontSize="11" fontFamily="sans-serif" fontWeight="500">
-                {node.title.length > 8 ? node.title.slice(0, 7) + '…' : node.title}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* Center label */}
-        <circle cx={centerX} cy={centerY} r="18" fill="#2D4A3E" />
-        <text x={centerX} y={centerY + 1} textAnchor="middle" fill="#F5F0EB" fontSize="11" fontWeight="bold">课程</text>
-      </svg>
-    </div>
-  );
-}

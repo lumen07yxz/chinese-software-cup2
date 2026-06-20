@@ -14,12 +14,20 @@ class Settings(BaseSettings):
     spark_app_id: str = ""
     spark_api_key: str = ""
     spark_api_secret: str = ""
+    spark_embedding_url: str = "https://emb-cn-huabei-1.xf-yun.com/"
     spark_api_url: str = "wss://spark-api.xf-yun.com/v1.1/chat"
-    spark_rest_url: str = "https://spark-api.xf-yun.com/v1.1/chat"
+    spark_rest_url: str = "https://spark-api-open.xf-yun.com/agent/v1/chat/completions"
+
+    # 讯飞 AI PPT 生成 WebAPI
+    ppt_app_id: str = ""
+    ppt_api_secret: str = ""
 
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
+
+    # CORS 允许的源（逗号分隔）
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # JWT 认证配置
     jwt_secret_key: str = "change-me-in-production-use-a-real-secret"

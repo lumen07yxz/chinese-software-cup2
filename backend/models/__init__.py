@@ -1,6 +1,10 @@
 from sqlalchemy import Column, Integer, String, Text, Float, DateTime, JSON
 from sqlalchemy.orm import DeclarativeBase
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):
@@ -22,8 +26,8 @@ class StudentProfile(Base):
 
     conversation_summary = Column(Text, default="")
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class LearningResource(Base):
@@ -38,7 +42,7 @@ class LearningResource(Base):
     file_path = Column(String(512), default="")
     course_chapter = Column(String(64), default="")
     difficulty = Column(Float, default=0.5)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class LearningPath(Base):
@@ -49,8 +53,9 @@ class LearningPath(Base):
     path_data = Column(JSON, default=dict)
     current_node = Column(String(64), default="")
     progress = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_nodes = Column(JSON, default=list)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class AssessmentRecord(Base):
@@ -62,7 +67,7 @@ class AssessmentRecord(Base):
     quiz_scores = Column(JSON, default=list)
     resource_interactions = Column(Integer, default=0)
     assessment_report = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 # ── 用户与对话模型 ──────────────────────────────────────────────────
@@ -76,7 +81,7 @@ class User(Base):
     username = Column(String(64), unique=True, index=True, nullable=False)
     hashed_password = Column(String(256), nullable=False)
     nickname = Column(String(64), default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class Conversation(Base):
@@ -86,8 +91,8 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(String(64), index=True, nullable=False)
     title = Column(String(256), default="新对话")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class ConversationMessage(Base):
@@ -98,4 +103,18 @@ class ConversationMessage(Base):
     conversation_id = Column(Integer, index=True, nullable=False)
     role = Column(String(16), nullable=False)  # "user" | "assistant" | "system"
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+
+
+class UserDocument(Base):
+    """用户导入的知识文档"""
+    __tablename__ = "user_documents"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), index=True, nullable=False)
+    title = Column(String(256), nullable=False)
+    content = Column(Text, default="")
+    file_path = Column(String(512), default="")
+    source_type = Column(String(32), default="upload")  # "upload" | "web"
+    tags = Column(JSON, default=list)
+    created_at = Column(DateTime, default=_utcnow)

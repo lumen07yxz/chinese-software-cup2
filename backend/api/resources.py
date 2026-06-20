@@ -32,12 +32,24 @@ async def list_resources(
 ):
     async with async_session() as session:
         from sqlalchemy import select
+        from models import StudentProfile
+
         query = select(LearningResource).where(LearningResource.user_id == current_user.username)
         if resource_type:
             query = query.where(LearningResource.resource_type == resource_type)
         query = query.order_by(LearningResource.created_at.desc()).limit(50)
         result = await session.execute(query)
         resources = result.scalars().all()
+
+        # 获取用户画像用于个性化排序
+        profile_result = await session.execute(
+            select(StudentProfile).where(StudentProfile.user_id == current_user.username)
+        )
+        student = profile_result.scalars().first()
+
+        # 画像驱动的资源加权排序
+        resources_sorted = _sort_resources_by_profile(resources, student)
+
         return {
             "resources": [
                 {
@@ -49,9 +61,69 @@ async def list_resources(
                     "difficulty": r.difficulty,
                     "created_at": r.created_at.isoformat() if r.created_at else "",
                 }
-                for r in resources
+                for r in resources_sorted
             ]
         }
+
+
+def _sort_resources_by_profile(resources: list, profile) -> list:
+    """根据学生画像对资源加权排序。
+
+    - cognitive_style = visual → mindmap/video 优先
+    - cognitive_style = verbal → doc 优先
+    - cognitive_style = active → code/quiz 优先
+    - weak_points 匹配章节关键词 → 置顶
+    """
+    if not profile:
+        return resources
+
+    style = getattr(profile, 'cognitive_style', '')
+    weak_points = getattr(profile, 'weak_points', []) or []
+    interests = getattr(profile, 'interests', []) or []
+    kb = getattr(profile, 'knowledge_base', {}) or {}
+
+    # 认知风格 → 资源类型偏好权重
+    style_weights = {
+        'visual': {'mindmap': 3, 'video': 3, 'doc': 1, 'code': 1, 'quiz': 1},
+        'verbal': {'doc': 3, 'mindmap': 1, 'quiz': 2, 'video': 1, 'code': 1},
+        'active': {'code': 3, 'quiz': 3, 'doc': 1, 'mindmap': 1, 'video': 1},
+        'reflective': {'doc': 2, 'mindmap': 2, 'quiz': 2, 'code': 1, 'video': 1},
+    }
+    weights = style_weights.get(style, {'doc': 1, 'mindmap': 1, 'quiz': 1, 'video': 1, 'code': 1})
+
+    scored = []
+    for r in resources:
+        score = 0
+        rtype = getattr(r, 'resource_type', 'doc')
+        chapter = getattr(r, 'course_chapter', '') or ''
+        title = getattr(r, 'title', '') or ''
+
+        # 认知风格匹配
+        score += weights.get(rtype, 1)
+
+        # 薄弱点匹配：章节/标题包含弱点的关键词
+        for wp in weak_points:
+            if any(kw in chapter + title for kw in (wp, wp[:2])):
+                score += 5
+                break
+
+        # 兴趣匹配
+        for it in interests:
+            if any(kw in chapter + title for kw in (it, it[:2])):
+                score += 2
+                break
+
+        # 掌握度加权：该章节掌握度低 → 排前面
+        for domain, mastery in kb.items():
+            if isinstance(mastery, (int, float)):
+                if domain[:4] in chapter or domain[:4] in title:
+                    score += max(0, (1.0 - float(mastery)) * 4)
+                    break
+
+        scored.append((r, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [item[0] for item in scored]
 
 
 @router.post("/generate")
@@ -76,11 +148,16 @@ async def generate_resource_stream(
         full_content = ""
         try:
             async for event_str in coordinator.generate():
-                data = json.loads(event_str)
+                # coordinator.generate() 的最后一次 yield 是纯文本而不是 JSON
+                # 需要先尝试 JSON 解析，失败则视为文本内容
+                try:
+                    data = json.loads(event_str)
+                except json.JSONDecodeError:
+                    # 纯文本内容（final full_output）
+                    if not full_content:
+                        full_content = event_str
+                    continue
 
-                # coordinator.generate() 分两种产出：
-                #   1. SSE 事件 dict → 直接转发
-                #   2. 纯文本字符串（最后一个 yield）→ 累积但不转发（已在 SSE text 事件中推送过）
                 if isinstance(data, dict) and data.get("type") in (
                     "agent_status", "text"
                 ):
@@ -152,7 +229,10 @@ async def generate_resource_stream(
 
 
 @router.get("/{resource_id}")
-async def get_resource(resource_id: int):
+async def get_resource(
+    resource_id: int,
+    current_user: User = Depends(get_current_user),
+):
     async with async_session() as session:
         from sqlalchemy import select
         result = await session.execute(
@@ -160,6 +240,8 @@ async def get_resource(resource_id: int):
         )
         resource = result.scalar_one_or_none()
         if not resource:
+            raise HTTPException(status_code=404, detail="Resource not found")
+        if resource.user_id != current_user.username:
             raise HTTPException(status_code=404, detail="Resource not found")
         return {
             "id": resource.id,
@@ -171,3 +253,36 @@ async def get_resource(resource_id: int):
             "difficulty": resource.difficulty,
             "created_at": resource.created_at.isoformat() if resource.created_at else "",
         }
+
+
+class ResourceUpdateRequest(BaseModel):
+    title: str | None = None
+    content: str | None = None
+    description: str | None = None
+
+
+@router.put("/{resource_id}")
+async def update_resource(
+    resource_id: int,
+    req: ResourceUpdateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """更新资源内容（F32 资源编辑）"""
+    async with async_session() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(LearningResource).where(LearningResource.id == resource_id)
+        )
+        resource = result.scalar_one_or_none()
+        if not resource or resource.user_id != current_user.username:
+            raise HTTPException(status_code=404, detail="Resource not found")
+
+        if req.title is not None:
+            resource.title = req.title
+        if req.content is not None:
+            resource.content = req.content
+        if req.description is not None:
+            resource.description = req.description
+
+        await session.commit()
+        return {"status": "updated", "id": resource_id}

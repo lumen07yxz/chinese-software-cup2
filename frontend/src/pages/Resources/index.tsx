@@ -1,9 +1,27 @@
 import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { fetchResources, generateResourcesStream, type AgentStatusEvent } from '../../services/api';
+import CodeBlock from '../../components/CodeBlock';
+import { fetchResources, fetchResourceDetail, generateResourcesStream, updateResource, type AgentStatusEvent } from '../../services/api';
 import { useProfileStore } from '../../stores/profileStore';
+import { useAutoTracker, useScrollTracker } from '../../hooks/useAutoTracker';
+import { downloadText, safeFilename } from '../../utils/export';
+
+const MARKDOWN_PLUGINS = {
+  remarkPlugins: [remarkGfm, remarkMath],
+  rehypePlugins: [rehypeKatex],
+  components: {
+    code: CodeBlock,
+    img: ({ src, alt }: { src?: string; alt?: string }) => {
+      if (!src || (!src.startsWith('/') && !src.startsWith('data:'))) {
+        return null
+      }
+      return <img src={src} alt={alt} className="max-w-full rounded" />
+    },
+  },
+};
 
 const RESOURCE_TYPES = [
   { key: '', label: '全部' },
@@ -65,20 +83,35 @@ export default function ResourcesPage() {
   const [genTopic, setGenTopic] = useState('');
   const [genChapter, setGenChapter] = useState('');
   const [genType, setGenType] = useState('doc');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [editingContent, setEditingContent] = useState<string | null>(null); // F32 编辑模式
+  const [saving, setSaving] = useState(false);
+  const [favorites, setFavorites] = useState<Set<number>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('resource_favorites') || '[]')); } catch { return new Set(); }
+  });
+  // F31 评分状态: resourceId → 'up' | 'down' | null
+  const [ratings, setRatings] = useState<Record<number, 'up' | 'down'>>(() => {
+    try { return JSON.parse(localStorage.getItem('resource_ratings') || '{}'); } catch { return {}; }
+  });
   const { profile } = useProfileStore();
 
   // Streaming state
   const [streamText, setStreamText] = useState('');
   const [agents, setAgents] = useState<AgentState[]>(INITIAL_AGENTS);
   const streamEndRef = useRef<HTMLDivElement>(null);
-  const [showAgentPanel, setShowAgentPanel] = useState(false);
+  const [, setShowAgentPanel] = useState(false);
+
+  // 自动学习行为追踪
+  useAutoTracker(true);
+  const detailRef = useRef<HTMLDivElement>(null);
+  useScrollTracker(detailRef, selected?.id ?? null);
 
   const loadResources = async () => {
     setLoading(true);
     try {
       const data = await fetchResources(activeType || undefined);
       setResources(data.resources || []);
-    } catch (e) { console.error(e); }
+    } catch { /* 资源加载失败，静默处理 */ }
     setLoading(false);
   };
 
@@ -94,12 +127,9 @@ export default function ResourcesPage() {
 
   const loadDetail = async (id: number) => {
     try {
-      const resp = await fetch(`/api/resources/${id}`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setSelected(data);
-      }
-    } catch (e) { console.error(e); }
+      const data = await fetchResourceDetail(id);
+      if (data && !data.detail) setSelected(data);
+    } catch { /* 资源加载失败，静默处理 */ }
   };
 
   const handleAgentStatus = (status: AgentStatusEvent) => {
@@ -119,6 +149,95 @@ export default function ResourcesPage() {
     }
   };
 
+  // 导出当前资源为 Markdown 文件
+  const handleExportMarkdown = () => {
+    if (!selected?.content) return;
+    const typeLabel = RESOURCE_TYPES.find((t) => t.key === selected.type)?.label || selected.type;
+    const meta = [
+      `# ${selected.title}`,
+      '',
+      `> 类型：${typeLabel} | 章节：${selected.chapter || '未分类'} | 难度：${Math.round((selected.difficulty || 0) * 100)}%`,
+      `> 生成时间：${selected.created_at || ''}`,
+      '',
+      '---',
+      '',
+    ].join('\n');
+    downloadText(`${safeFilename(selected.title)}.md`, meta + selected.content);
+  };
+
+  // 导出当前资源为 PDF（浏览器打印 → 另存为 PDF，复用已渲染的 KaTeX/Mermaid/Prism DOM）
+  const handleExportPDF = () => {
+    if (!selected?.content) return;
+    window.print();
+  };
+
+  // F32 编辑：进入编辑模式
+  const handleStartEdit = () => {
+    if (!selected?.content) return;
+    setEditingContent(selected.content);
+  };
+
+  // F32 编辑：保存
+  const handleSaveEdit = async () => {
+    if (!selected || editingContent === null) return;
+    setSaving(true);
+    try {
+      await updateResource(selected.id, { content: editingContent });
+      // 更新本地 selected 和 resources 列表
+      const updated = { ...selected, content: editingContent };
+      setSelected(updated);
+      setResources((prev) => prev.map((r) => r.id === selected.id ? updated : r));
+      setEditingContent(null);
+    } catch { /* ignore */ }
+    setSaving(false);
+  };
+
+  // F32 编辑：取消
+  const handleCancelEdit = () => setEditingContent(null);
+
+  // F30 收藏切换
+  const toggleFavorite = (id: number) => {
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      localStorage.setItem('resource_favorites', JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  // F31 评分切换
+  const toggleRating = (id: number, value: 'up' | 'down') => {
+    setRatings((prev) => {
+      const next = { ...prev };
+      next[id] = next[id] === value ? undefined! : value;
+      if (!next[id]) delete next[id];
+      localStorage.setItem('resource_ratings', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  // F34 搜索过滤
+  const filteredResources = (() => {
+    let list = resources;
+    // 收藏筛选
+    if (searchQuery === '__favorites__') {
+      list = list.filter((r) => favorites.has(r.id));
+    } else if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter((r) =>
+        r.title.toLowerCase().includes(q) ||
+        r.description.toLowerCase().includes(q) ||
+        r.chapter.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  })();
+
+  // F35 同章节关联资源（排除当前选中）
+  const relatedResources = selected && selected.chapter
+    ? resources.filter((r) => r.chapter === selected.chapter && r.id !== selected.id).slice(0, 6)
+    : [];
+
   const handleGenerate = async () => {
     if (!genTopic.trim() || generating) return;
 
@@ -128,30 +247,36 @@ export default function ResourcesPage() {
     setShowAgentPanel(true);
     setSelected(null);
 
-    await generateResourcesStream(
-      {
-        // user_id removed (now from JWT)
-        resource_type: genType,
-        topic: genTopic,
-        chapter: genChapter,
-        difficulty: 0.5,
-        profile: profile || {},
-      },
-      // onChunk
-      (chunk) => setStreamText((prev) => prev + chunk),
-      // onDone
-      () => {
-        setGenerating(false);
-        loadResources();
-      },
-      // onError
-      (err) => {
-        setStreamText((prev) => prev + `\n\n> ❌ 出错了: ${err}`);
-        setGenerating(false);
-      },
-      // onAgentStatus
-      handleAgentStatus,
-    );
+    try {
+      await generateResourcesStream(
+        {
+          // user_id removed (now from JWT)
+          resource_type: genType,
+          topic: genTopic,
+          chapter: genChapter,
+          difficulty: 0.5,
+          profile: profile || {},
+        },
+        // onChunk
+        (chunk) => setStreamText((prev) => prev + chunk),
+        // onDone
+        () => {
+          setGenerating(false);
+          loadResources();
+        },
+        // onError
+        (err) => {
+          setStreamText((prev) => prev + `\n\n> ❌ 出错了: ${err}`);
+          setGenerating(false);
+        },
+        // onAgentStatus
+        handleAgentStatus,
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '网络错误';
+      setStreamText((prev) => prev || `\n\n> ❌ ${msg}`);
+      setGenerating(false);
+    }
   };
 
   return (
@@ -164,7 +289,7 @@ export default function ResourcesPage() {
           <p className="text-[13px] text-muted mt-0.5">多智能体协作生成的个性化学习资料</p>
         </div>
 
-        {/* Type filter */}
+        {/* Type filter + Search */}
         <div className="flex-shrink-0 px-6 py-3 flex gap-2 border-b border-border/50 flex-wrap items-center">
           {RESOURCE_TYPES.map((t) => (
             <button
@@ -179,6 +304,25 @@ export default function ResourcesPage() {
               {t.label}
             </button>
           ))}
+          {/* Favorites toggle filter */}
+          <button
+            onClick={() => { setActiveType(''); setSearchQuery(searchQuery === '__favorites__' ? '' : '__favorites__'); }}
+            className={`px-3 py-1.5 text-[13px] rounded-full transition-colors border
+              ${searchQuery === '__favorites__' ? 'bg-amber text-warm-white border-amber' : 'bg-surface border-border text-muted hover:text-ink hover:bg-cream'}`}
+          >
+            ⭐ 收藏
+          </button>
+          <div className="relative ml-auto flex-shrink-0">
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="搜索资源..."
+              className="w-40 px-3 py-1.5 pl-8 text-[13px] bg-surface border border-border rounded-full outline-none focus:border-ink focus:w-52 transition-all"
+            />
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+          </div>
         </div>
 
         {/* Generate bar */}
@@ -289,7 +433,7 @@ export default function ResourcesPage() {
               {/* Streaming output */}
               {streamText && (
                 <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                  <ReactMarkdown {...MARKDOWN_PLUGINS}>
                     {streamText}
                   </ReactMarkdown>
                   <span className="inline-block w-1.5 h-4 bg-amber animate-pulse ml-0.5" />
@@ -322,7 +466,7 @@ export default function ResourcesPage() {
               </div>
 
               <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                <ReactMarkdown {...MARKDOWN_PLUGINS}>
                   {streamText}
                 </ReactMarkdown>
               </div>
@@ -344,61 +488,176 @@ export default function ResourcesPage() {
           {loading ? (
             <div className="text-center text-muted py-12">加载中...</div>
           ) : resources.length > 0 && !generating ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {resources.map((r) => (
-                <button
-                  key={r.id}
-                  onClick={() => loadDetail(r.id)}
-                  className={`text-left p-4 rounded-lg border transition-all hover:shadow-sm
-                    ${selected?.id === r.id
-                      ? 'border-ink bg-ink/5'
-                      : 'border-border bg-surface hover:border-muted'
-                    }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <span className="text-xl flex-shrink-0">{TYPE_ICONS[r.type] || '📝'}</span>
-                    <div className="min-w-0">
-                      <h3 className="text-[14px] font-medium text-ink leading-snug truncate">{r.title}</h3>
-                      <p className="text-[12px] text-muted mt-1 line-clamp-2">{r.description}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className="text-[11px] px-1.5 py-0.5 bg-cream rounded text-muted">{r.chapter}</span>
-                        <span className="text-[11px] text-muted">
-                          难度 {Math.round(r.difficulty * 100)}%
-                        </span>
-                      </div>
+            <>
+              {/* 搜索结果为空 */}
+              {filteredResources.length === 0 && searchQuery.trim() && (
+                <div className="text-center py-8 mb-4">
+                  <p className="text-sm text-muted">没有找到匹配的资源</p>
+                  <button onClick={() => setSearchQuery('')} className="text-[12px] text-ink hover:underline mt-1">清除搜索</button>
+                </div>
+              )}
+              {filteredResources.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {filteredResources.map((r) => (
+                    <div key={r.id} className="group relative">
+                      <button
+                        onClick={() => loadDetail(r.id)}
+                        className={`w-full text-left p-4 rounded-lg border transition-all hover:shadow-sm
+                          ${selected?.id === r.id
+                            ? 'border-ink bg-ink/5'
+                            : 'border-border bg-surface hover:border-muted'
+                          }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="text-xl flex-shrink-0">{TYPE_ICONS[r.type] || '📝'}</span>
+                          <div className="min-w-0">
+                            <h3 className="text-[14px] font-medium text-ink leading-snug truncate">{r.title}</h3>
+                            <p className="text-[12px] text-muted mt-1 line-clamp-2">{r.description}</p>
+                            <div className="flex items-center gap-2 mt-2">
+                              <span className="text-[11px] px-1.5 py-0.5 bg-cream rounded text-muted">{r.chapter}</span>
+                              <span className="text-[11px] text-muted">
+                                难度 {Math.round(r.difficulty * 100)}%
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                      {/* Favorite toggle */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleFavorite(r.id); }}
+                        className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-sm opacity-0 group-hover:opacity-100 transition-opacity hover:scale-110"
+                        title={favorites.has(r.id) ? '取消收藏' : '收藏'}
+                      >
+                        {favorites.has(r.id) ? '⭐' : '☆'}
+                      </button>
                     </div>
-                  </div>
-                </button>
-              ))}
-            </div>
+                  ))}
+                </div>
+              )}
+            </>
           ) : null}
         </div>
       </div>
 
       {/* Detail panel */}
-      <div className="w-[480px] flex-shrink-0 border-l border-border bg-surface overflow-y-auto">
+      <div ref={detailRef} className={`w-full md:w-[480px] flex-shrink-0 border-l border-border bg-surface overflow-y-auto
+        max-md:fixed max-md:inset-0 max-md:z-30 max-md:transition-transform max-md:duration-300 max-md:ease-out
+        ${selected ? 'max-md:translate-x-0' : 'max-md:translate-x-full'}`}>
         {selected ? (
-          <div className="p-6">
-            <div className="flex items-center justify-between mb-4">
+          <div className="p-6 print-area">
+            <div className="flex items-center justify-between mb-4 no-print">
               <h2 className="text-base font-semibold text-ink">{selected.title}</h2>
-              <button
-                onClick={() => setSelected(null)}
-                className="text-muted hover:text-ink transition-colors"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={handleExportMarkdown}
+                  disabled={!selected.content}
+                  title="导出为 Markdown 文件"
+                  className="text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-cream transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  导出 .md
+                </button>
+                <button
+                  onClick={handleExportPDF}
+                  disabled={!selected.content}
+                  title="打印 / 另存为 PDF"
+                  className="text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-cream transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  导出 PDF
+                </button>
+                {/* F32 编辑按钮 */}
+                <button
+                  onClick={handleStartEdit}
+                  disabled={editingContent !== null}
+                  title="编辑内容"
+                  className="text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-cream transition-colors disabled:opacity-40"
+                >
+                  编辑
+                </button>
+                {/* F31 评分按钮 */}
+                <button
+                  onClick={() => toggleRating(selected.id, 'up')}
+                  title="资源质量好"
+                  className={`text-xs px-1.5 py-1 rounded transition-colors ${ratings[selected.id] === 'up' ? 'text-emerald-600 bg-emerald-50' : 'text-muted hover:text-ink hover:bg-cream'}`}
+                >
+                  👍
+                </button>
+                <button
+                  onClick={() => toggleRating(selected.id, 'down')}
+                  title="资源需要改进"
+                  className={`text-xs px-1.5 py-1 rounded transition-colors ${ratings[selected.id] === 'down' ? 'text-red-500 bg-red-50' : 'text-muted hover:text-ink hover:bg-cream'}`}
+                >
+                  👎
+                </button>
+                <button
+                  onClick={() => setSelected(null)}
+                  className="text-muted hover:text-ink transition-colors ml-1"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div className="prose prose-sm max-w-none prose-headings:text-ink prose-code:text-sm">
-              {selected.content ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex]}>
-                  {selected.content}
-                </ReactMarkdown>
-              ) : (
-                <p className="text-muted">加载内容中...</p>
-              )}
-            </div>
+            {/* F32 编辑模式 / 阅读模式 */}
+            {editingContent !== null ? (
+              <div className="no-print">
+                <textarea
+                  value={editingContent}
+                  onChange={(e) => setEditingContent(e.target.value)}
+                  className="w-full min-h-[400px] p-4 text-sm font-mono bg-warm-white border border-border rounded-lg outline-none focus:border-ink resize-y"
+                  placeholder="输入 Markdown 内容..."                />
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={handleSaveEdit}
+                    disabled={saving}
+                    className="px-4 py-2 bg-ink text-warm-white text-sm rounded-lg hover:bg-ink-light transition-colors disabled:opacity-50"
+                  >
+                    {saving ? '保存中...' : '保存'}
+                  </button>
+                  <button
+                    onClick={handleCancelEdit}
+                    className="px-4 py-2 border border-border text-sm rounded-lg hover:bg-cream transition-colors"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="prose prose-sm max-w-none prose-headings:text-ink prose-code:text-sm">
+                {selected.content ? (
+                  <ReactMarkdown {...MARKDOWN_PLUGINS}>
+                    {selected.content}
+                  </ReactMarkdown>
+                ) : (
+                  <p className="text-muted">加载内容中...</p>
+                )}
+              </div>
+            )}
+
+            {/* F35 关联资源推荐 */}
+            {relatedResources.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-border/50 no-print">
+                <h3 className="text-[12px] text-muted mb-3">同章节相关资源</h3>
+                <div className="space-y-2">
+                  {relatedResources.map((r) => (
+                    <button
+                      key={r.id}
+                      onClick={() => loadDetail(r.id)}
+                      className="w-full text-left flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-cream hover:border-muted transition-colors text-sm"
+                    >
+                      <span className="flex-shrink-0">{TYPE_ICONS[r.type] || '📝'}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium text-ink truncate">{r.title}</div>
+                        <div className="text-[11px] text-muted truncate">{r.description}</div>
+                      </div>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-cream rounded text-muted flex-shrink-0">
+                        {RESOURCE_TYPES.find((t) => t.key === r.type)?.label || r.type}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex items-center justify-center h-full text-muted text-sm">

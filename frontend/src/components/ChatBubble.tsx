@@ -1,7 +1,9 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { useEffect, useRef } from 'react';
+import { useRef, useEffect } from 'react';
+import CodeBlock from './CodeBlock';
 import type { Message } from '../stores/chatStore';
 
 interface Props {
@@ -45,8 +47,17 @@ export default function ChatBubble({ message, isStreaming }: Props) {
         ) : (
           <div className="prose prose-sm max-w-none prose-headings:text-ink prose-a:text-amber prose-code:text-sm prose-pre:bg-[#f8f7f5] prose-pre:border prose-pre:border-border">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
+              remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex]}
+              components={{
+                code: CodeBlock,
+                img: ({ src, alt }: { src?: string; alt?: string }) => {
+                  if (!src || (!src.startsWith('/') && !src.startsWith('data:'))) {
+                    return null
+                  }
+                  return <img src={src} alt={alt} className="max-w-full rounded" />
+                },
+              }}
             >
               {message.content}
             </ReactMarkdown>

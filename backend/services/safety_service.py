@@ -51,10 +51,19 @@ def check_safety(text: str) -> dict:
         matches = re.findall(pattern, text, re.IGNORECASE)
         hallucination_hits.extend(matches)
 
+    # 外部图片链接检测（防止 LLM 生成不可访问的外部图片 URL）
+    external_image_hits: list[str] = []
+    for match in re.finditer(r'!\[.*?\]\((https?://[^\)]+)\)', text):
+        url = match.group(1)
+        # 只允许相对路径和 data: URI
+        if not url.startswith(('data:', '/')):
+            external_image_hits.append(url)
+
     return {
         "safe": len(flags) == 0,
         "flags": flags,
         "hallucination_markers": hallucination_hits,
+        "external_images": external_image_hits,
         "suggestion": (
             "内容包含敏感信息，已标记分类：" + "、".join(f["category"] for f in flags)
             if flags
@@ -143,12 +152,12 @@ async def llm_safety_check(text: str) -> dict:
             "suggestion": result.get("suggestion", ""),
         }
     except Exception as e:
-        logger.warning("LLM 安全审查失败，默认放行: %s", e)
+        logger.error("LLM 安全审查失败，默认拒绝: %s", e)
         return {
-            "safe": True,
-            "risk_level": "low",
-            "issues": [],
-            "suggestion": "",
+            "safe": False,
+            "risk_level": "unknown",
+            "issues": [f"安全审查服务异常: {str(e)[:100]}"],
+            "suggestion": "内容安全审查暂时不可用，请稍后重试",
         }
 
 
@@ -171,12 +180,12 @@ async def llm_hallucination_check(text: str, context: str = "") -> dict:
             "suggestion": result.get("suggestion", ""),
         }
     except Exception as e:
-        logger.warning("LLM 幻觉检测失败，默认放行: %s", e)
+        logger.error("LLM 幻觉检测失败，默认标记为可能幻觉: %s", e)
         return {
-            "has_hallucination": False,
-            "confidence": 0.0,
-            "issues": [],
-            "suggestion": "",
+            "has_hallucination": True,
+            "confidence": 0.5,
+            "issues": [f"幻觉检测服务异常: {str(e)[:100]}"],
+            "suggestion": "事实核查暂时不可用，请人工确认内容准确性",
         }
 
 
@@ -190,17 +199,23 @@ def _parse_json_from_llm(raw: str) -> dict:
     if text.startswith("```"):
         lines = text.split("\n")
         lines = [l for l in lines if not l.strip().startswith("```")]
-        text = "\n".join(lines)
+        text = "\n".join(lines).strip()
     try:
-        return json.loads(text)
+        result = json.loads(text)
+        # 确保返回的是 dict 类型（json.loads 可能返回 str 如 "safe"）
+        if isinstance(result, dict):
+            return result
     except json.JSONDecodeError:
-        # 尝试找到第一个 { 到最后一个 }
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1:
-            try:
-                return json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                pass
-        logger.warning("无法解析 LLM 安全审查 JSON: %s", raw[:200])
-        return {}
+        pass
+    # 尝试找到第一个 { 到最后一个 }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        try:
+            result = json.loads(text[start : end + 1])
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+    logger.warning("无法解析 LLM 安全审查 JSON: %s", raw[:200])
+    return {}

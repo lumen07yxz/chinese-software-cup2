@@ -1,7 +1,8 @@
 """认证 API —— 注册、登录、当前用户信息"""
 
+import re
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 
 from db import async_session
@@ -10,16 +11,38 @@ from auth import hash_password, verify_password, create_access_token, get_curren
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_一-鿿]{2,20}$")
+
 
 class RegisterRequest(BaseModel):
     username: str
     password: str
     nickname: str = ""
 
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        v = v.strip()
+        if not _USERNAME_RE.match(v):
+            raise ValueError("用户名需 2-20 位字母、数字、下划线或中文")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 4 or len(v) > 20:
+            raise ValueError("密码长度需在 4-20 位之间")
+        return v
+
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        return v.strip()
 
 
 @router.post("/register")

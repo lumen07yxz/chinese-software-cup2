@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { fetchAssessment, generateAssessmentStream, recordBehavior } from '../../services/api';
+import CodeBlock from '../../components/CodeBlock';
+import { fetchAssessment, fetchStudyTrends, generateAssessmentStream, recordBehavior, type StudyTrendPoint } from '../../services/api';
 import { useProfileStore } from '../../stores/profileStore';
 
 interface AssessmentRecord {
@@ -25,20 +27,48 @@ interface DimensionDef {
 
 const DIMENSION_COLORS = ['#2D4A3E', '#C77D43', '#0F766E', '#8B8580', '#D99B5E'];
 
+const MD_PLUGINS = {
+  remarkPlugins: [remarkGfm, remarkMath],
+  rehypePlugins: [rehypeKatex],
+  components: {
+    code: CodeBlock,
+    img: ({ src, alt }: { src?: string; alt?: string }) => {
+      if (!src || (!src.startsWith('/') && !src.startsWith('data:'))) {
+        return null
+      }
+      return <img src={src} alt={alt} className="max-w-full rounded" />
+    },
+  },
+};
+
 export default function AssessmentPage() {
   const [records, setRecords] = useState<AssessmentRecord[]>([]);
   const [latestReport, setLatestReport] = useState<Record<string, unknown> | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [streamText, setStreamText] = useState('');
+  const [justGenerated, setJustGenerated] = useState(false);
   const [timeInput, setTimeInput] = useState('');
+  const [trends, setTrends] = useState<StudyTrendPoint[]>([]);
+  const [trendTotal, setTrendTotal] = useState(0);
+  const [trendAvg, setTrendAvg] = useState(0);
   const { profile } = useProfileStore();
   const streamEndRef = useRef<HTMLDivElement>(null);
 
   // Load assessment data on mount
   useEffect(() => {
     loadAssessment();
+    loadTrends();
   }, []);
+
+  const loadTrends = async () => {
+    try {
+      const data = await fetchStudyTrends();
+      setTrends(data.trends || []);
+      setTrendTotal(data.total_minutes || 0);
+      setTrendAvg(data.avg_per_day || 0);
+    } catch { /* ignore */ }
+  };
 
   useEffect(() => {
     streamEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -52,6 +82,17 @@ export default function AssessmentPage() {
       setLatestReport(data.latest_report || null);
     } catch { /* ignore */ }
     setLoading(false);
+  };
+
+  /** 从 report 对象中提取可渲染的字符串 */
+  const extractReportText = (report: Record<string, unknown> | null): string => {
+    if (!report) return '';
+    // 新格式: { content: "markdown...", generated_at: "...", study_data: {...} }
+    if (typeof report.content === 'string') return report.content;
+    // 旧格式兼容: 纯字符串被错误地存在 JSON 列中
+    if (typeof report === 'string') return report;
+    // 其他情况：尝试格式化
+    return JSON.stringify(report, null, 2);
   };
 
   const handleRecordBehavior = async () => {
@@ -70,31 +111,40 @@ export default function AssessmentPage() {
     if (generating) return;
     setGenerating(true);
     setStreamText('');
+    setJustGenerated(false);
 
     const totalTime = records.reduce((sum, r) => sum + r.study_time_minutes, 0);
     const totalInteractions = records.reduce((sum, r) => sum + r.resource_interactions, 0);
 
-    await generateAssessmentStream(
-      {
-        // user_id from JWT
-        profile: profile || {},
-        study_data: {
-          total_study_time_minutes: totalTime,
-          total_resource_interactions: totalInteractions,
-          session_count: records.length,
-          recent_quiz_scores: records.length > 0 ? records[0].quiz_scores : [],
+    try {
+      await generateAssessmentStream(
+        {
+          // user_id from JWT
+          profile: profile || {},
+          study_data: {
+            total_study_time_minutes: totalTime,
+            total_resource_interactions: totalInteractions,
+            session_count: records.length,
+            recent_quiz_scores: records.length > 0 ? records[0].quiz_scores : [],
+          },
         },
-      },
-      (chunk) => setStreamText((prev) => prev + chunk),
-      () => {
-        setGenerating(false);
-        loadAssessment();
-      },
-      (err) => {
-        setStreamText((prev) => prev + `\n\n> ❌ 出错了: ${err}`);
-        setGenerating(false);
-      },
-    );
+        (chunk) => setStreamText((prev) => prev + chunk),
+        () => {
+          setGenerating(false);
+          setJustGenerated(true);
+          // 刷新 DB 记录（后端已保存报告，此处同步最新数据）
+          loadAssessment();
+        },
+        (err) => {
+          setStreamText((prev) => prev + `\n\n> ❌ 出错了: ${err}`);
+          setGenerating(false);
+        },
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '网络错误';
+      setStreamText((prev) => prev || `\n\n> ❌ ${msg}`);
+      setGenerating(false);
+    }
   }, [generating, records, profile]);
 
   // Compute stats
@@ -142,8 +192,31 @@ export default function AssessmentPage() {
             ))}
           </div>
 
+          {/* 学习时间趋势图 */}
+          {trends.length > 0 && trendTotal > 0 && (
+            <div className="mb-6 p-5 rounded-xl border border-border bg-surface">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-sm font-medium text-ink">学习时间趋势</h2>
+                  <p className="text-[11px] text-muted mt-0.5">
+                    最近 14 天累计 {trendTotal} 分钟，日均 {trendAvg} 分钟
+                  </p>
+                </div>
+              </div>
+              <TrendChart data={trends} />
+            </div>
+          )}
+
+          {/* 知识点掌握热力图 */}
+          {profile?.knowledge_base && Object.keys(profile.knowledge_base).length > 0 && (
+            <div className="mb-6 p-5 rounded-xl border border-border bg-surface">
+              <h2 className="text-sm font-medium text-ink mb-4">知识点掌握热力图</h2>
+              <KnowledgeHeatmap knowledgeBase={profile.knowledge_base} weakPoints={profile.weak_points || []} />
+            </div>
+          )}
+
           {/* Record behavior bar */}
-          <div className="flex items-center gap-3 mb-6 p-4 rounded-lg border border-border bg-cream/30">
+          <div className="flex flex-wrap items-center gap-3 mb-6 p-4 rounded-lg border border-border bg-cream/30">
             <span className="text-[13px] text-ink whitespace-nowrap">📝 记录学习</span>
             <input
               value={timeInput}
@@ -236,7 +309,7 @@ export default function AssessmentPage() {
                 <span className="text-sm text-muted">AI 正在生成评估报告...</span>
               </div>
               <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                <ReactMarkdown {...MD_PLUGINS}>
                   {streamText}
                 </ReactMarkdown>
                 <span className="inline-block w-1.5 h-4 bg-amber animate-pulse ml-0.5" />
@@ -245,8 +318,8 @@ export default function AssessmentPage() {
             </div>
           )}
 
-          {/* Cached report */}
-          {latestReport && !generating && (
+          {/* Cached report from DB (shown when not just generated) */}
+          {latestReport && !generating && !justGenerated && (
             <div className="mb-6">
               <h3 className="text-sm font-medium text-ink mb-3 flex items-center gap-2">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -256,20 +329,34 @@ export default function AssessmentPage() {
                   <line x1="16" y1="17" x2="8" y2="17"/>
                 </svg>
                 已有评估报告
+                <button
+                  onClick={() => window.print()}
+                  className="ml-auto text-[12px] px-3 py-1 rounded-md text-muted hover:text-ink hover:bg-cream transition-colors no-print"
+                >
+                  导出 PDF
+                </button>
               </h3>
-              <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex]}>
-                  {typeof latestReport === 'string' ? latestReport : JSON.stringify(latestReport, null, 2)}
+              <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none print-area">
+                <ReactMarkdown {...MD_PLUGINS}>
+                  {extractReportText(latestReport)}
                 </ReactMarkdown>
               </div>
             </div>
           )}
 
-          {/* Streamed report after generation */}
-          {!generating && streamText && !latestReport && (
+          {/* Streamed report — visible after completion */}
+          {streamText && !generating && (
             <div className="mb-6">
-              <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeKatex]}>
+              <div className="flex items-center justify-end mb-2">
+                <button
+                  onClick={() => window.print()}
+                  className="text-[12px] px-3 py-1 rounded-md text-muted hover:text-ink hover:bg-cream transition-colors no-print"
+                >
+                  导出 PDF
+                </button>
+              </div>
+              <div className="p-5 rounded-lg border border-border bg-surface prose prose-sm max-w-none print-area">
+                <ReactMarkdown {...MD_PLUGINS}>
                   {streamText}
                 </ReactMarkdown>
               </div>
@@ -320,6 +407,129 @@ export default function AssessmentPage() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ─── SVG 折线图（学习时间趋势） ─── */
+
+function TrendChart({ data }: { data: StudyTrendPoint[] }) {
+  const W = 680, H = 180;
+  const padL = 48, padR = 16, padT = 20, padB = 36;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  const maxMin = Math.max(...data.map(d => d.minutes), 10);
+  const yStep = Math.max(1, Math.ceil(maxMin / 4));
+  const yTicks = Array.from({ length: 5 }, (_, i) => i * yStep);
+
+  const xScale = (i: number) => padL + (i / (data.length - 1)) * chartW;
+  const yScale = (v: number) => padT + chartH - (v / (yTicks[yTicks.length - 1] || 1)) * chartH;
+
+  const points = data.map((d, i) => `${xScale(i)},${yScale(d.minutes)}`).join(' ');
+  const areaPath = `M${xScale(0)},${yScale(0)} ${data.map((d, i) => `L${xScale(i)},${yScale(d.minutes)}`).join(' ')} L${xScale(data.length - 1)},${yScale(0)} Z`;
+
+  const fmtDay = (s: string) => { try { const d = new Date(s + 'T00:00:00'); return `${d.getMonth()+1}/${d.getDate()}`; } catch { return s.slice(5); } };
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
+      {/* Y axis grid + labels */}
+      {yTicks.map(v => (
+        <g key={v}>
+          <line x1={padL} y1={yScale(v)} x2={W - padR} y2={yScale(v)} stroke="#E8E4DF" strokeDasharray="3,3" />
+          <text x={padL - 8} y={yScale(v)} textAnchor="end" dominantBaseline="middle" fontSize="11" fill="#8B8580">{v}</text>
+        </g>
+      ))}
+
+      {/* Area fill */}
+      <path d={areaPath} fill="#2D4A3E" opacity="0.08" />
+
+      {/* Line */}
+      <polyline points={points} fill="none" stroke="#2D4A3E" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+
+      {/* Data points */}
+      {data.map((d, i) => d.minutes > 0 && (
+        <circle key={i} cx={xScale(i)} cy={yScale(d.minutes)} r="3.5" fill="#2D4A3E" stroke="#fff" strokeWidth="2" />
+      ))}
+
+      {/* X axis labels (first/last + every 3rd to avoid overlap on narrow screens) */}
+      {data.map((d, i) => (i === 0 || i === data.length - 1 || i % 3 === 0) && (
+        <text key={i} x={xScale(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="#8B8580">
+          {fmtDay(d.date)}
+        </text>
+      ))}
+
+      {/* Tooltip area for max value */}
+      {(() => {
+        const maxIdx = data.reduce((mi, d, i) => d.minutes > data[mi].minutes ? i : mi, 0);
+        if (data[maxIdx].minutes === 0) return null;
+        const mx = xScale(maxIdx), my = yScale(data[maxIdx].minutes);
+        return (
+          <g>
+            <rect x={mx - 22} y={my - 22} width="44" height="16" rx="4" fill="#2D4A3E" opacity="0.85" />
+            <text x={mx} y={my - 12} textAnchor="middle" fontSize="10" fill="#fff" fontWeight="600">
+              {data[maxIdx].minutes}m
+            </text>
+          </g>
+        );
+      })()}
+    </svg>
+  );
+}
+
+/* ─── 知识点掌握热力图 ─── */
+
+function KnowledgeHeatmap({ knowledgeBase, weakPoints }: { knowledgeBase: Record<string, number>; weakPoints: string[] }) {
+  const entries = Object.entries(knowledgeBase).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return <p className="text-sm text-muted">暂无知识掌握数据</p>;
+
+  const weakSet = new Set(weakPoints);
+  const cols = Math.min(entries.length, 4);
+
+  const getColor = (v: number): string => {
+    if (v >= 0.8) return '#059669';
+    if (v >= 0.6) return '#10B981';
+    if (v >= 0.4) return '#C77D43';
+    if (v >= 0.2) return '#F59E0B';
+    return '#EF4444';
+  };
+
+  const getBg = (v: number): string => {
+    if (v >= 0.8) return '#ECFDF5';
+    if (v >= 0.6) return '#F0FDF4';
+    if (v >= 0.4) return '#FFFBEB';
+    if (v >= 0.2) return '#FEF3C7';
+    return '#FEF2F2';
+  };
+
+  return (
+    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+      {entries.map(([key, value]) => (
+        <div
+          key={key}
+          className="p-3 rounded-lg border text-center transition-all hover:shadow-sm"
+          style={{
+            borderColor: weakSet.has(key) ? '#EF4444' : '#E8E4DF',
+            backgroundColor: getBg(value),
+            borderWidth: weakSet.has(key) ? '2px' : '1px',
+          }}
+        >
+          <div className="text-[11px] text-muted mb-1 truncate" title={key}>{key}</div>
+          <div className="text-lg font-semibold" style={{ color: getColor(value) }}>
+            {Math.round(value * 100)}%
+          </div>
+          {weakSet.has(key) && (
+            <div className="text-[10px] text-red-500 mt-1">薄弱点</div>
+          )}
+          {/* 小进度条 */}
+          <div className="h-1 bg-gray-200 rounded-full mt-2 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${Math.max(value * 100, 2)}%`, backgroundColor: getColor(value) }}
+            />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
