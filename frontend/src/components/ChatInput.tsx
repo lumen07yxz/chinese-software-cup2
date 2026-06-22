@@ -44,7 +44,7 @@ export default function ChatInput({ onSend, disabled, placeholder }: Props) {
         disabled={disabled}
         placeholder={placeholder || '描述你的学习情况，AI 将为你构建个性化学习画像...'}
         rows={1}
-        className="flex-1 resize-none outline-none bg-transparent text-[15px] text-gray-800 placeholder:text-muted leading-relaxed max-h-[150px]"
+        className="flex-1 resize-none outline-none bg-transparent text-[15px] text-ink placeholder:text-muted leading-relaxed max-h-[150px]"
       />
       <button
         onClick={handleSend}

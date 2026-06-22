@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 
 let mermaidInitialized = false;
@@ -51,12 +51,64 @@ export function extractMermaidBlocks(text: string): string[] {
   return blocks;
 }
 
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 5;
+const SCALE_STEP = 1.2;
+
 export default function MermaidBlock({ code }: { code: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const svgWrapperRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
   const trimmedCode = code.trim();
   const valid = isValidMermaid(trimmedCode);
 
+  // ── zoom / pan / drag handlers ──────────────────────────────
+  // Wheel 必须用原生事件 { passive: false }，React onWheel 是 passive 的无法 preventDefault
+  useEffect(() => {
+    const el = svgWrapperRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setScale(prev => {
+        const next = e.deltaY < 0 ? prev * SCALE_STEP : prev / SCALE_STEP;
+        return Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    setDragging(true);
+    dragStart.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+  }, [offset]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragging) return;
+    setOffset({
+      x: dragStart.current.ox + (e.clientX - dragStart.current.x),
+      y: dragStart.current.oy + (e.clientY - dragStart.current.y),
+    });
+  }, [dragging]);
+
+  const handleMouseUp = useCallback(() => setDragging(false), []);
+
+  const resetView = useCallback(() => {
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+  }, []);
+
+  const zoomIn = useCallback(() => setScale(s => Math.min(MAX_SCALE, s * SCALE_STEP)), []);
+  const zoomOut = useCallback(() => setScale(s => Math.max(MIN_SCALE, s / SCALE_STEP)), []);
+
+  // ── mermaid rendering ───────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || !trimmedCode || !valid) {
       if (!valid && trimmedCode) {
@@ -81,25 +133,72 @@ export default function MermaidBlock({ code }: { code: string }) {
       if (containerRef.current) {
         containerRef.current.innerHTML = clean;
       }
-    }).catch((err) => {
-      // 只在首次渲染时记错，避免重复刷
+    }).catch(() => {
       if (!renderCache.has(trimmedCode)) {
         renderCache.set(trimmedCode, '__error__');
-        setError(err?.message?.slice(0, 80) || '渲染失败');
       }
     });
   }, [trimmedCode, valid]);
 
-  // 无效或渲染失败的，显示纯文本代码块
+  // ── render ──────────────────────────────────────────────────
   if (error || !valid) {
-    return (
-      <div className="mermaid-block my-2">
-        <pre className="text-left text-[13px] text-gray-600 bg-cream/50 p-3 rounded-lg border border-border overflow-x-auto whitespace-pre-wrap font-mono">
-          {trimmedCode}
-        </pre>
-      </div>
-    );
+    return null;
   }
 
-  return <div ref={containerRef} className="mermaid-block my-2" />;
+  const hasTransform = scale !== 1 || offset.x !== 0 || offset.y !== 0;
+
+  return (
+    <div className="my-2 relative group">
+      {/* toolbar — visible on hover */}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1
+                      bg-white/90 backdrop-blur-sm border border-border rounded-lg px-1 py-0.5
+                      shadow-sm opacity-0 group-hover:opacity-100 transition-opacity duration-200
+                      dark:bg-zinc-800/90 dark:border-zinc-600">
+        <button onClick={zoomOut} title="缩小"
+          className="w-7 h-7 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-sm font-mono select-none">
+          −
+        </button>
+        <span className="text-xs text-muted min-w-[3rem] text-center font-mono select-none">
+          {Math.round(scale * 100)}%
+        </span>
+        <button onClick={zoomIn} title="放大"
+          className="w-7 h-7 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-sm font-mono select-none">
+          +
+        </button>
+        {hasTransform && (
+          <button onClick={resetView} title="重置视图"
+            className="w-7 h-7 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-xs select-none">
+            ↺
+          </button>
+        )}
+      </div>
+
+      {/* hint text */}
+      <div className="absolute bottom-2 right-2 z-10 text-[11px] text-muted/60
+                      opacity-0 group-hover:opacity-100 transition-opacity duration-200 select-none pointer-events-none">
+        滚轮缩放 · 拖拽平移 · 双击重置
+      </div>
+
+      {/* svg viewport */}
+      <div
+        ref={svgWrapperRef}
+        className="mermaid-block overflow-hidden"
+        style={{ cursor: dragging ? 'grabbing' : 'grab' }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onDoubleClick={resetView}
+      >
+        <div
+          ref={containerRef}
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transformOrigin: 'center center',
+            transition: dragging ? 'none' : 'transform 0.15s ease-out',
+          }}
+        />
+      </div>
+    </div>
+  );
 }

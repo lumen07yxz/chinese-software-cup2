@@ -156,8 +156,8 @@ export function computeViewBox(positions: Map<string, LayoutNode>): {
   return {
     minX: minX - PADDING,
     minY: minY - PADDING,
-    width: maxX - minX + PADDING * 2,
-    height: maxY - minY + PADDING * 2,
+    width: Math.min(maxX - minX + PADDING * 2, 1200),
+    height: Math.min(maxY - minY + PADDING * 2, 600),
   }
 }
 

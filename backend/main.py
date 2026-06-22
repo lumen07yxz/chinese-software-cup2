@@ -17,6 +17,8 @@ from api.conversations import router as conversations_router
 from api.auth import router as auth_router
 from api.knowledge import router as knowledge_router
 from api.ppt import router as ppt_router
+from api.digital_human import router as digital_human_router
+from api.voice import router as voice_router
 from config import settings
 
 
@@ -130,6 +132,8 @@ app.include_router(assessment_router)
 app.include_router(tutoring_router)
 app.include_router(knowledge_router)
 app.include_router(ppt_router)
+app.include_router(digital_human_router)
+app.include_router(voice_router)
 
 
 @app.get("/api/health")

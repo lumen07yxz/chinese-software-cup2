@@ -2,8 +2,10 @@ import { useCallback, useRef, useEffect, useState } from 'react';
 import ChatBubble from '../../components/ChatBubble';
 import ChatInput from '../../components/ChatInput';
 import ProfilePanel from '../../components/ProfilePanel';
+import VoiceModePanel from '../../components/VoiceModePanel';
 import { useChatStore } from '../../stores/chatStore';
 import { useProfileStore } from '../../stores/profileStore';
+import { useStreamBuffer } from '../../hooks/useStreamBuffer';
 import {
   sendChatMessage,
   fetchConversations,
@@ -70,8 +72,8 @@ function getPersonalizedHints(profile: Record<string, unknown> | null): string[]
 
 export default function ChatPage() {
   const {
-    messages, isStreaming, conversationId,
-    addMessage, appendToLast, setStreaming, setConversationId, loadMessages, clearMessages,
+    messages, isStreaming, conversationId, mode,
+    addMessage, appendToLast, setStreaming, setConversationId, setMode, loadMessages, clearMessages,
   } = useChatStore();
   const { profile, setProfile } = useProfileStore();
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -79,6 +81,7 @@ export default function ChatPage() {
   const [showSidebar, setShowSidebar] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [suggestionsVisible, setSuggestionsVisible] = useState(false);
+  const { pushChunk, flushAll, reset: resetBuffer } = useStreamBuffer(appendToLast, 25);
 
   // Personalized hint buttons based on profile
   const hints = getPersonalizedHints(profile as unknown as Record<string, unknown> | null);
@@ -102,6 +105,7 @@ export default function ChatPage() {
 
   // 选择历史对话
   const handleSelectConversation = useCallback(async (id: number) => {
+    resetBuffer();
     setStreaming(true);
     try {
       const data = await fetchConversationMessages(id);
@@ -109,23 +113,27 @@ export default function ChatPage() {
       setConversationId(id);
     } catch { /* ignore */ }
     setStreaming(false);
-  }, [loadMessages, setConversationId, setStreaming]);
+  }, [loadMessages, setConversationId, setStreaming, resetBuffer]);
 
   // 新建对话
   const handleNewConversation = useCallback(() => {
+    resetBuffer();
     clearMessages();
     setShowSidebar(false);
-  }, [clearMessages]);
+  }, [clearMessages, resetBuffer]);
 
   // 删除对话
   const handleDeleteConversation = useCallback(async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
     try {
       await deleteConversation(id);
-      if (conversationId === id) clearMessages();
+      if (conversationId === id) {
+        resetBuffer();
+        clearMessages();
+      }
       loadConvList();
     } catch { /* ignore */ }
-  }, [conversationId, clearMessages, loadConvList]);
+  }, [conversationId, clearMessages, loadConvList, resetBuffer]);
 
   const handleSend = useCallback(async (text: string) => {
     if (isStreaming) return;
@@ -141,8 +149,9 @@ export default function ChatPage() {
     await sendChatMessage(
       text,
       conversationId,
-      (chunk) => appendToLast(chunk),
+      (chunk) => pushChunk(chunk),
       (newConvId) => {
+        flushAll(); // 流结束后立即释放 buffer 中剩余文本
         setConversationId(newConvId);
         setStreaming(false);
         loadConvList(); // 刷新对话列表
@@ -156,6 +165,7 @@ export default function ChatPage() {
         }
       },
       (err) => {
+        flushAll();
         appendToLast(`\n\n> 出错了: ${err}`);
         setStreaming(false);
       },
@@ -169,7 +179,7 @@ export default function ChatPage() {
       },
     );
   }, [conversationId, isStreaming, addMessage, appendToLast, setStreaming,
-      setConversationId, setProfile, loadConvList]);
+      setConversationId, setProfile, loadConvList, pushChunk, flushAll]);
 
   return (
     <div className="flex h-screen max-h-screen">
@@ -188,6 +198,7 @@ export default function ChatPage() {
             </svg>
             新对话
           </button>
+          <p className="text-[11px] text-muted/60 px-3 pt-2 pb-0.5">← 点击目录按钮查看过往对话</p>
           <div className="space-y-0.5 max-h-[calc(100vh-10rem)] overflow-y-auto">
             {conversations.map((conv) => (
               <div
@@ -225,13 +236,14 @@ export default function ChatPage() {
         <div className="flex-shrink-0 px-6 py-4 border-b border-border bg-surface/50 flex items-center gap-3">
           <button
             onClick={() => setShowSidebar(!showSidebar)}
-            className="p-1 text-muted hover:text-ink transition-colors"
+            className="flex items-center gap-1.5 px-2 py-1 text-[13px] text-muted hover:text-ink hover:bg-cream rounded-lg transition-colors"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <line x1="3" y1="6" x2="21" y2="6"/>
               <line x1="3" y1="12" x2="21" y2="12"/>
               <line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
+            历史对话
           </button>
           <div>
             <h1 className="text-lg font-semibold text-ink">对话画像</h1>
@@ -239,9 +251,28 @@ export default function ChatPage() {
               与 AI 自然对话，系统自动识别你的学习背景、能力和偏好
             </p>
           </div>
+
+          {/* 语音模式 Toggle */}
+          <button
+            onClick={() => setMode(mode === 'text' ? 'voice' : 'text')}
+            className={`ml-auto px-3 py-1.5 text-[13px] rounded-lg transition-colors flex items-center gap-1.5
+              ${mode === 'voice'
+                ? 'bg-amber text-warm-white'
+                : 'bg-cream text-ink hover:bg-amber hover:text-warm-white'
+              }`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+            {mode === 'text' ? '语音模式' : '文字模式'}
+          </button>
         </div>
 
-        {/* Messages */}
+        {/* Messages / Voice Mode */}
+        {mode === 'text' ? (
         <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5">
           <div className="max-w-3xl mx-auto">
           {messages.length === 0 && (
@@ -300,13 +331,20 @@ export default function ChatPage() {
           <div ref={chatEndRef} />
           </div>
         </div>
+        ) : (
+        <div className="flex-1 min-h-0">
+          <VoiceModePanel />
+        </div>
+        )}
 
-        {/* Input */}
+        {/* Input — only in text mode */}
+        {mode === 'text' && (
         <div className="flex-shrink-0 px-4 md:px-6 py-4 border-t border-border bg-surface/50">
           <div className="max-w-3xl mx-auto">
             <ChatInput onSend={handleSend} disabled={isStreaming} />
           </div>
         </div>
+        )}
       </div>
 
       {/* Side panel - Profile */}

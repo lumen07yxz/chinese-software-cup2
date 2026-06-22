@@ -268,7 +268,7 @@ export default function AssessmentPage() {
                   {dimensions.map((dim) => (
                     <div key={dim.key}>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-[13px] text-gray-700">{dim.label}</span>
+                        <span className="text-[13px] text-ink">{dim.label}</span>
                         <span className="text-[12px] font-medium" style={{ color: dim.color }}>{dim.score}/100</span>
                       </div>
                       <div className="h-2 bg-cream rounded-full overflow-hidden">

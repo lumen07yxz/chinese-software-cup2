@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -94,6 +94,66 @@ export default function ResourcesPage() {
     try { return JSON.parse(localStorage.getItem('resource_ratings') || '{}'); } catch { return {}; }
   });
   const { profile } = useProfileStore();
+
+  // ── resizable split ─────────────────────────────────────────
+  const SPLIT_KEY = 'resources_split_ratio';
+  const [splitRatio, setSplitRatio] = useState<number>(() => {
+    const saved = parseFloat(localStorage.getItem(SPLIT_KEY) || '');
+    return Number.isFinite(saved) && saved > 0.15 && saved < 0.85 ? saved : 0.38;
+  });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const leftPanelRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
+  const startX = useRef(0);
+  const startRatio = useRef(0);
+
+  // 左侧面板宽度自适应：小于 340px 切换紧凑模式
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const el = leftPanelRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setCompact(entry.contentRect.width < 340);
+    });
+    ro.observe(el);
+    // 初始检测
+    setCompact(el.clientWidth < 340);
+    return () => ro.disconnect();
+  }, []);
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    startX.current = e.clientX;
+    startRatio.current = splitRatio;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, [splitRatio]);
+
+  const handleDragMove = useCallback((e: MouseEvent) => {
+    if (!isDragging.current || !containerRef.current) return;
+    const width = containerRef.current.offsetWidth;
+    const dx = e.clientX - startX.current;
+    const next = startRatio.current + dx / width;
+    const clamped = Math.min(0.75, Math.max(0.18, next));
+    setSplitRatio(clamped);
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    isDragging.current = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(SPLIT_KEY, String(splitRatio));
+  }, [splitRatio]);
+
+  useEffect(() => {
+    document.addEventListener('mousemove', handleDragMove);
+    document.addEventListener('mouseup', handleDragEnd);
+    return () => {
+      document.removeEventListener('mousemove', handleDragMove);
+      document.removeEventListener('mouseup', handleDragEnd);
+    };
+  }, [handleDragMove, handleDragEnd]);
 
   // Streaming state
   const [streamText, setStreamText] = useState('');
@@ -280,22 +340,27 @@ export default function ResourcesPage() {
   };
 
   return (
-    <div className="flex h-screen max-h-screen">
-      {/* Resource list */}
-      <div className="flex-1 flex flex-col min-w-0 bg-warm-white">
+    <div ref={containerRef} className="flex h-screen max-h-screen select-none">
+      {/* Resource list — left panel */}
+      <div
+        ref={leftPanelRef}
+        className="flex flex-col min-w-0 bg-warm-white overflow-hidden"
+        style={{ width: `${splitRatio * 100}%`, flexShrink: 0 }}
+      >
         {/* Header */}
-        <div className="flex-shrink-0 px-6 py-4 border-b border-border bg-surface/50">
-          <h1 className="text-lg font-semibold text-ink">学习资源</h1>
-          <p className="text-[13px] text-muted mt-0.5">多智能体协作生成的个性化学习资料</p>
+        <div className={`flex-shrink-0 border-b border-border bg-surface/50 ${compact ? 'px-3 py-2' : 'px-6 py-4'}`}>
+          <h1 className={`font-semibold text-ink ${compact ? 'text-sm' : 'text-lg'}`}>学习资源</h1>
+          {!compact && <p className="text-[13px] text-muted mt-0.5">多智能体协作生成的个性化学习资料</p>}
         </div>
 
         {/* Type filter + Search */}
-        <div className="flex-shrink-0 px-6 py-3 flex gap-2 border-b border-border/50 flex-wrap items-center">
+        <div className={`flex-shrink-0 border-b border-border/50 flex gap-1.5 items-center flex-wrap ${compact ? 'px-3 py-2' : 'px-6 py-3 gap-2'}`}>
           {RESOURCE_TYPES.map((t) => (
             <button
               key={t.key}
               onClick={() => { setActiveType(t.key); if (t.key) setGenType(t.key); }}
-              className={`px-3 py-1.5 text-[13px] rounded-full transition-colors
+              className={`rounded-full transition-colors whitespace-nowrap
+                ${compact ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[13px]'}
                 ${activeType === t.key
                   ? 'bg-ink text-warm-white'
                   : 'bg-surface border border-border text-muted hover:text-ink hover:bg-cream'
@@ -307,60 +372,85 @@ export default function ResourcesPage() {
           {/* Favorites toggle filter */}
           <button
             onClick={() => { setActiveType(''); setSearchQuery(searchQuery === '__favorites__' ? '' : '__favorites__'); }}
-            className={`px-3 py-1.5 text-[13px] rounded-full transition-colors border
+            className={`rounded-full transition-colors border whitespace-nowrap
+              ${compact ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[13px]'}
               ${searchQuery === '__favorites__' ? 'bg-amber text-warm-white border-amber' : 'bg-surface border-border text-muted hover:text-ink hover:bg-cream'}`}
           >
-            ⭐ 收藏
+            ⭐{!compact && ' 收藏'}
           </button>
-          <div className="relative ml-auto flex-shrink-0">
+          <div className={`relative flex-shrink-0 ${compact ? 'ml-auto' : 'ml-auto'}`}>
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索资源..."
-              className="w-40 px-3 py-1.5 pl-8 text-[13px] bg-surface border border-border rounded-full outline-none focus:border-ink focus:w-52 transition-all"
+              placeholder="搜索..."
+              className={`${compact ? 'w-24 px-2 py-1 pl-7 text-[11px]' : 'w-40 px-3 py-1.5 pl-8 text-[13px]'} bg-surface border border-border rounded-full outline-none focus:border-ink transition-all`}
             />
-            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg className={`absolute top-1/2 -translate-y-1/2 text-muted ${compact ? 'left-2 w-3 h-3' : 'left-2.5 w-3.5 h-3.5'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
           </div>
         </div>
 
         {/* Generate bar */}
-        <div className="flex-shrink-0 px-6 py-3 border-b border-border/50 bg-cream/30">
-          <div className="flex items-center gap-3">
-            <input
-              value={genTopic}
-              onChange={(e) => setGenTopic(e.target.value)}
-              placeholder="输入知识点，如：反向传播算法"
-              className="flex-1 px-3 py-2 text-[14px] bg-surface border border-border rounded-md outline-none focus:border-ink transition-colors"
-            />
-            <input
-              value={genChapter}
-              onChange={(e) => setGenChapter(e.target.value)}
-              placeholder="章节（可选）"
-              className="w-36 px-3 py-2 text-[14px] bg-surface border border-border rounded-md outline-none focus:border-ink transition-colors"
-            />
-            <button
-              onClick={handleGenerate}
-              disabled={!genTopic.trim() || generating}
-              className="px-4 py-2 bg-ink text-warm-white text-[13px] rounded-md hover:bg-ink-light transition-colors disabled:opacity-50 flex-shrink-0 flex items-center gap-2"
-            >
-              {generating ? (
-                <>
-                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24">
+        <div className={`flex-shrink-0 border-b border-border/50 bg-cream/30 ${compact ? 'px-3 py-2' : 'px-6 py-3'}`}>
+          {compact ? (
+            /* 紧凑模式：单行，input + 按钮 */
+            <div className="flex items-center gap-2">
+              <input
+                value={genTopic}
+                onChange={(e) => setGenTopic(e.target.value)}
+                placeholder="知识点..."
+                className="flex-1 min-w-0 px-2 py-1.5 text-[12px] bg-surface border border-border rounded outline-none focus:border-ink transition-colors"
+              />
+              <button
+                onClick={handleGenerate}
+                disabled={!genTopic.trim() || generating}
+                className="px-3 py-1.5 bg-ink text-warm-white text-[12px] rounded hover:bg-ink-light transition-colors disabled:opacity-50 flex-shrink-0 flex items-center gap-1.5"
+              >
+                {generating ? (
+                  <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24">
                     <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none" strokeDasharray="32" strokeLinecap="round" />
                   </svg>
-                  协作生成中...
-                </>
-              ) : (
-                '生成资源'
-              )}
-            </button>
-          </div>
+                ) : '生成'}
+              </button>
+            </div>
+          ) : (
+            /* 标准模式 */
+            <div className="flex items-center gap-3">
+              <input
+                value={genTopic}
+                onChange={(e) => setGenTopic(e.target.value)}
+                placeholder="输入知识点，如：反向传播算法"
+                className="flex-1 px-3 py-2 text-[14px] bg-surface border border-border rounded-md outline-none focus:border-ink transition-colors"
+              />
+              <input
+                value={genChapter}
+                onChange={(e) => setGenChapter(e.target.value)}
+                placeholder="章节（可选）"
+                className="w-36 px-3 py-2 text-[14px] bg-surface border border-border rounded-md outline-none focus:border-ink transition-colors"
+              />
+              <button
+                onClick={handleGenerate}
+                disabled={!genTopic.trim() || generating}
+                className="px-4 py-2 bg-ink text-warm-white text-[13px] rounded-md hover:bg-ink-light transition-colors disabled:opacity-50 flex-shrink-0 flex items-center gap-2"
+              >
+                {generating ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none" strokeDasharray="32" strokeLinecap="round" />
+                    </svg>
+                    协作生成中...
+                  </>
+                ) : (
+                  '生成资源'
+                )}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Content area */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className={`flex-1 overflow-y-auto ${compact ? 'px-3 py-3' : 'px-6 py-4'}`}>
           {/* Streaming content */}
           {generating && (
             <div className="mb-4">
@@ -497,35 +587,52 @@ export default function ResourcesPage() {
                 </div>
               )}
               {filteredResources.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className={compact ? 'space-y-2' : 'grid grid-cols-1 md:grid-cols-2 gap-3'}>
                   {filteredResources.map((r) => (
                     <div key={r.id} className="group relative">
                       <button
                         onClick={() => loadDetail(r.id)}
-                        className={`w-full text-left p-4 rounded-lg border transition-all hover:shadow-sm
+                        className={`w-full text-left rounded-lg border transition-all hover:shadow-sm
                           ${selected?.id === r.id
                             ? 'border-ink bg-ink/5'
                             : 'border-border bg-surface hover:border-muted'
-                          }`}
+                          }
+                          ${compact ? 'p-2.5' : 'p-4'}`}
                       >
-                        <div className="flex items-start gap-3">
-                          <span className="text-xl flex-shrink-0">{TYPE_ICONS[r.type] || '📝'}</span>
-                          <div className="min-w-0">
-                            <h3 className="text-[14px] font-medium text-ink leading-snug truncate">{r.title}</h3>
-                            <p className="text-[12px] text-muted mt-1 line-clamp-2">{r.description}</p>
-                            <div className="flex items-center gap-2 mt-2">
-                              <span className="text-[11px] px-1.5 py-0.5 bg-cream rounded text-muted">{r.chapter}</span>
-                              <span className="text-[11px] text-muted">
-                                难度 {Math.round(r.difficulty * 100)}%
-                              </span>
+                        {compact ? (
+                          /* 紧凑模式：单行卡片 */
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-base flex-shrink-0">{TYPE_ICONS[r.type] || '📝'}</span>
+                            <div className="min-w-0 flex-1">
+                              <h3 className="text-[12px] font-medium text-ink leading-snug truncate">{r.title}</h3>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <span className="text-[10px] px-1 py-0.5 bg-cream rounded text-muted truncate max-w-[80px]">{r.chapter}</span>
+                                <span className="text-[10px] text-muted/60 flex-shrink-0">难度 {Math.round(r.difficulty * 100)}%</span>
+                              </div>
                             </div>
                           </div>
-                        </div>
+                        ) : (
+                          /* 标准模式 */
+                          <div className="flex items-start gap-3">
+                            <span className="text-xl flex-shrink-0">{TYPE_ICONS[r.type] || '📝'}</span>
+                            <div className="min-w-0">
+                              <h3 className="text-[14px] font-medium text-ink leading-snug truncate">{r.title}</h3>
+                              <p className="text-[12px] text-muted mt-1 line-clamp-2">{r.description}</p>
+                              <div className="flex items-center gap-2 mt-2">
+                                <span className="text-[11px] px-1.5 py-0.5 bg-cream rounded text-muted">{r.chapter}</span>
+                                <span className="text-[11px] text-muted">
+                                  难度 {Math.round(r.difficulty * 100)}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </button>
                       {/* Favorite toggle */}
                       <button
                         onClick={(e) => { e.stopPropagation(); toggleFavorite(r.id); }}
-                        className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full text-sm opacity-0 group-hover:opacity-100 transition-opacity hover:scale-110"
+                        className={`absolute flex items-center justify-center rounded-full text-sm opacity-0 group-hover:opacity-100 transition-opacity hover:scale-110
+                          ${compact ? 'top-1 right-1 w-5 h-5 text-xs' : 'top-2 right-2 w-6 h-6'}`}
                         title={favorites.has(r.id) ? '取消收藏' : '收藏'}
                       >
                         {favorites.has(r.id) ? '⭐' : '☆'}
@@ -539,8 +646,18 @@ export default function ResourcesPage() {
         </div>
       </div>
 
-      {/* Detail panel */}
-      <div ref={detailRef} className={`w-full md:w-[480px] flex-shrink-0 border-l border-border bg-surface overflow-y-auto
+      {/* ── Draggable divider ── */}
+      <div
+        onMouseDown={handleDragStart}
+        className="w-1.5 flex-shrink-0 cursor-col-resize bg-border/60 hover:bg-ink/40 active:bg-ink/60 transition-colors relative group/divider"
+        title="拖拽调整面板宽度"
+      >
+        <div className="absolute inset-y-0 -left-1 -right-1 z-10" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-8 rounded-full bg-muted/40 group-hover/divider:bg-white/80 transition-colors" />
+      </div>
+
+      {/* Detail panel — right side, takes remaining space */}
+      <div ref={detailRef} className={`flex-1 min-w-0 border-l border-border bg-surface overflow-y-auto
         max-md:fixed max-md:inset-0 max-md:z-30 max-md:transition-transform max-md:duration-300 max-md:ease-out
         ${selected ? 'max-md:translate-x-0' : 'max-md:translate-x-full'}`}>
         {selected ? (

@@ -170,6 +170,10 @@ export async function fetchResources(type?: string) {
 
 export async function fetchResourceDetail(id: number) {
   const resp = await apiFetch(`/resources/${id}`)
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: '加载失败' }))
+    throw new Error(err.detail || `HTTP ${resp.status}`)
+  }
   return resp.json()
 }
 
@@ -367,4 +371,24 @@ export async function queryPPTProgress(sid: string) {
     throw new Error((err as Record<string, unknown>).detail as string || '查询失败')
   }
   return resp.json()
+}
+
+export async function downloadLocalPPT(taskId: string, filename: string) {
+  const token = localStorage.getItem('auth_token')
+  const resp = await fetch(`${API_BASE}/ppt/download/${encodeURIComponent(taskId)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error((err as Record<string, unknown>).detail as string || '下载失败')
+  }
+  const blob = await resp.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }

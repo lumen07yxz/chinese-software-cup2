@@ -180,10 +180,12 @@ class ResourceCoordinator:
                     context = chapter_context
 
             # 语义检索：同时在课程库和用户文档集合中搜索（来源不限章节）
-            search_results = rag_service.search(self.topic, top_k=10)
+            search_results = rag_service.search(self.topic, top_k=15)
             user_doc_count = sum(1 for r in search_results if r.get('source') == 'user_upload')
+            course_doc_count = sum(1 for r in search_results if r.get('source') == 'course')
             search_text = "\n\n".join(
-                [r.get("content", "")[:1000] for r in search_results]
+                [f"[{r.get('source', 'unknown')}|{r.get('chapter', '')}] {r.get('content', '')[:1200]}"
+                 for r in search_results]
             )
 
             # 合并课程库章节上下文 + 语义检索结果
@@ -192,27 +194,24 @@ class ResourceCoordinator:
             elif search_text:
                 context = search_text
 
-            # Step 1.5: 联网搜索补充
-            # 触发条件：RAG 结果不足 500 字，或没有指定章节（即 AI 搜索出题模式）
+            # Step 1.5: 联网搜索补充（始终执行，为资源生成提供最新信息）
             web_context = ""
-            if len(context) < 500 or not self.chapter:
-                try:
-                    web_results = await web_search_service.search(self.topic, top_k=3)
-                    web_context = "\n\n".join([
-                        f"[网络资料] {r['snippet']}"
-                        for r in web_results if r.get('snippet')
-                    ])[:2000]
-                except Exception:
-                    pass
+            try:
+                web_results = await web_search_service.search(self.topic, top_k=5)
+                web_context = "\n\n".join([
+                    f"[网络资料|{r.get('title', '')}] {r['snippet']}"
+                    for r in web_results if r.get('snippet')
+                ])[:3000]
+            except Exception:
+                pass
             self._web_context = web_context
 
             yield json.dumps(
                 self._emit_status(
                     "rag",
                     "done",
-                    f"检索完成，找到 {len(context)} 字符的相关内容"
-                    + (f"（含用户文档 {user_doc_count} 条）" if user_doc_count > 0 else "")
-                    + (" + " + str(len(web_context)) + " 字符网络资料" if web_context else ""),
+                    f"检索完成：课程库 {course_doc_count} 条 + 用户文档 {user_doc_count} 条"
+                    + (f" + 网络资料 {len(web_context)} 字符" if web_context else ""),
                 ),
                 ensure_ascii=False,
             ) + "\n\n"
@@ -374,10 +373,10 @@ class ResourceCoordinator:
 **学生画像摘要**：{json.dumps(self.profile, ensure_ascii=False, default=str)[:500]}
 
 **课程参考内容（含用户导入文档）**：
-{context[:3000] if context else "（无）"}
+{context[:5000] if context else "（无）"}
 
 **网络补充资料**：
-{self._web_context[:2000] if hasattr(self, '_web_context') and self._web_context else "（无）"}
+{self._web_context[:3000] if hasattr(self, '_web_context') and self._web_context else "（无）"}
 
 请输出：
 1. 该知识点的核心重点
@@ -404,10 +403,10 @@ class ResourceCoordinator:
 {analysis[:2000]}
 
 **课程参考资料（含用户导入文档）**：
-{context[:3000] if context else "（无）"}
+{context[:5000] if context else "（无）"}
 
 **网络补充资料（最新信息）**：
-{self._web_context[:2000] if self._web_context else "（无）"}
+{self._web_context[:3000] if self._web_context else "（无）"}
 
 请严格按照你的角色定位生成高质量的{self._type_label()}。使用 Markdown 格式输出，支持 LaTeX 公式（$...$ 或 $$...$$）。
 """

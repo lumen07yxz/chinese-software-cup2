@@ -12,7 +12,6 @@
   --color-surface: #FFFFFF;
 }
 
-/* H45 暗黑模式：通过 html.dark 类切换 */
 html.dark {
   --color-cream: #1E1E1E;
   --color-warm-white: #121212;
@@ -27,8 +26,31 @@ html.dark {
 html.dark body { background-color: #121212; color: #E8E4DF; }
 html.dark input, html.dark textarea, html.dark select { background-color: #1E1E1E; color: #E8E4DF; border-color: #333; }
 html.dark .bg-white { background-color: #1E1E1E; }
-html.dark pre[class*="language-"] { background: #1a1a1a !important; border-color: #333; }
+html.dark pre[class*="language-"] { background: #1a1a1a !important; border-color: #333; color: #d4d4d4; }
+html.dark code[class*="language-"] { color: #d4d4d4; }
+html.dark :not(pre) > code { background: #2a2a2a; color: #e8b07a; }
 html.dark .mermaid-block { background: #1a1a1a; border-color: #333; }
+html.dark .prose { --tw-prose-body: #d4d0cb; --tw-prose-headings: #e8e4df; --tw-prose-bold: #e8e4df; --tw-prose-links: #d99b5e; --tw-prose-counters: #8b8580; --tw-prose-bullets: #8b8580; --tw-prose-hr: #333; --tw-prose-quotes: #b0aba5; --tw-prose-quote-borders: #555; --tw-prose-captions: #8b8580; --tw-prose-code: #e8b07a; --tw-prose-pre-code: #d4d4d4; --tw-prose-pre-bg: #1a1a1a; --tw-prose-th: #333; --tw-prose-td: #222; --tw-prose-td-borders: #333; }
+html.dark .prose table { border-color: #333; }
+html.dark .prose thead { border-bottom-color: #444; }
+html.dark .prose tbody tr { border-bottom-color: #2a2a2a; }
+html.dark .prose a { color: #d99b5e; }
+html.dark .prose strong { color: #e8e4df; }
+html.dark .prose code { color: #e8b07a; }
+html.dark .prose pre { background: #1a1a1a; border-color: #333; color: #d4d4d4; }
+html.dark .prose blockquote { border-left-color: #555; color: #b0aba5; }
+html.dark .prose hr { border-color: #333; }
+html.dark .prose thead th { color: #d4d0cb; }
+html.dark .prose td, html.dark .prose th { border-color: #333; }
+html.dark .token.comment, html.dark .token.prolog, html.dark .token.doctype, html.dark .token.cdata { color: #6b7280; }
+html.dark .token.punctuation { color: #9ca3af; }
+html.dark .token.property, html.dark .token.tag, html.dark .token.boolean, html.dark .token.number, html.dark .token.constant, html.dark .token.symbol, html.dark .token.deleted { color: #e8b07a; }
+html.dark .token.selector, html.dark .token.attr-name, html.dark .token.string, html.dark .token.char, html.dark .token.builtin, html.dark .token.inserted { color: #6ee7b7; }
+html.dark .token.operator, html.dark .token.entity, html.dark .token.url { color: #9ca3af; }
+html.dark .language-css .token.string, html.dark .style .token.string { color: #9ca3af; }
+html.dark .token.atrule, html.dark .token.attr-value, html.dark .token.keyword { color: #e8e4df; font-weight: 500; }
+html.dark .token.function, html.dark .token.class-name { color: #c4b5fd; }
+html.dark .token.regex, html.dark .token.important, html.dark .token.variable { color: #fbbf24; }
 
 body {
   margin: 0;
@@ -41,123 +63,56 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-#root {
-  min-height: 100vh;
-}
-
+#root { min-height: 100vh; }
 .katex { font-size: 1.05em !important; }
 
-/* rehype-prism-plus overrides */
 pre[class*="language-"] {
-  border-radius: 8px;
-  border: 1px solid var(--color-border);
-  background: #f8f7f5 !important;
-  padding: 1em;
-  font-size: 13px;
-  line-height: 1.65;
-  overflow-x: auto;
+  border-radius: 8px; border: 1px solid var(--color-border);
+  background: #f8f7f5 !important; padding: 1em; font-size: 13px; line-height: 1.65; overflow-x: auto;
 }
+code[class*="language-"] { font-size: 13px; font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace; }
+:not(pre) > code { background: #f0ece7; padding: 0.15em 0.35em; border-radius: 4px; font-size: 0.9em; color: #2D4A3E; }
 
-code[class*="language-"] {
-  font-size: 13px;
-  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
-}
-
-/* Inline code */
-:not(pre) > code {
-  background: #f0ece7;
-  padding: 0.15em 0.35em;
-  border-radius: 4px;
-  font-size: 0.9em;
-  color: #2D4A3E;
-}
-
-/* Prism token colors */
-.token.comment,
-.token.prolog,
-.token.doctype,
-.token.cdata { color: #8B8580; }
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #8B8580; }
 .token.punctuation { color: #6b7280; }
-.token.property,
-.token.tag,
-.token.boolean,
-.token.number,
-.token.constant,
-.token.symbol,
-.token.deleted { color: #C77D43; }
-.token.selector,
-.token.attr-name,
-.token.string,
-.token.char,
-.token.builtin,
-.token.inserted { color: #0F766E; }
-.token.operator,
-.token.entity,
-.token.url,
-.language-css .token.string,
-.style .token.string { color: #78716C; }
-.token.atrule,
-.token.attr-value,
-.token.keyword { color: #2D4A3E; font-weight: 500; }
-.token.function,
-.token.class-name { color: #8B5CF6; }
-.token.regex,
-.token.important,
-.token.variable { color: #D97706; }
+.token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted { color: #C77D43; }
+.token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted { color: #0F766E; }
+.token.operator, .token.entity, .token.url, .language-css .token.string, .style .token.string { color: #78716C; }
+.token.atrule, .token.attr-value, .token.keyword { color: #2D4A3E; font-weight: 500; }
+.token.function, .token.class-name { color: #8B5CF6; }
+.token.regex, .token.important, .token.variable { color: #D97706; }
+.line-numbers .line-numbers-rows { border-right-color: var(--color-border); }
 
-/* Line numbers (rehype-prism-plus) */
-.line-numbers .line-numbers-rows {
-  border-right-color: var(--color-border);
-}
-
-/* Mermaid container */
 .mermaid-block {
-  background: #fafaf9;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 1.5rem;
-  margin: 1rem 0;
-  overflow-x: auto;
-  text-align: center;
+  background: #fafaf9; border: 1px solid var(--color-border); border-radius: 8px;
+  padding: 1.5rem; margin: 0; overflow: hidden; text-align: center; min-height: 120px; user-select: none;
 }
-.mermaid-block svg {
-  max-width: 100%;
-  height: auto;
-}
+.mermaid-block svg { width: 100%; height: auto; }
 
-/* Scrollbar */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #d4d0cb; border-radius: 10px; }
 ::-webkit-scrollbar-thumb:hover { background: #b0aba5; }
 
-/* Page transition animation */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes thinkingPulse { 0%,100% { transform: scale(1); opacity: 0.4; } 50% { transform: scale(1.4); opacity: 0; } }
+@keyframes thinkingDot { 0%,60%,100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-6px); opacity: 1; } }
+@keyframes streamFadeIn { from { opacity: 0.3; } to { opacity: 1; } }
+@keyframes cursorBlink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
-/* ====== 打印 / PDF 导出样式 ====== */
+/* Print */
 @media print {
-  html, body { height: auto; overflow: visible; }
-  body * { visibility: hidden; }
-  .print-area, .print-area * { visibility: visible; }
-  .print-area {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    padding: 2rem 1.5rem !important;
-    overflow: visible;
-    background: #ffffff;
-  }
+  html, body, #root { height: auto !important; overflow: visible !important; margin: 0; padding: 0; }
+  body > * { visibility: hidden; }
+  .print-area { position: fixed !important; left: 0; top: 0; width: 100% !important; max-height: none !important; height: auto !important; padding: 2rem 1.5rem !important; margin: 0; overflow: visible !important; background: #ffffff; z-index: 9999; visibility: visible !important; }
+  .print-area, .print-area * { visibility: visible !important; }
+  .print-area *, .print-area *::before, .print-area *::after { max-height: none !important; overflow: visible !important; transform: none !important; }
   .print-area .katex { font-size: 1.05em !important; }
-  .print-area pre,
-  .print-area svg,
-  .print-area img {
-    page-break-inside: avoid;
-    max-width: 100%;
-  }
+  .print-area pre, .print-area svg, .print-area img { page-break-inside: avoid; max-width: 100% !important; height: auto !important; }
+  .print-area h1, .print-area h2, .print-area h3, .print-area h4, .print-area h5, .print-area h6 { page-break-after: avoid; }
+  .print-area p, .print-area li { orphans: 3; widows: 3; }
   .no-print { display: none !important; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html.dark .print-area { color: #1a1a1a !important; }
+  html.dark .print-area .mermaid-block, html.dark .print-area pre, html.dark .print-area code { background: #f5f5f4 !important; color: #1a1a1a !important; }
 }

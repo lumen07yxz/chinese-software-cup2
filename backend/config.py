@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     ppt_app_id: str = ""
     ppt_api_secret: str = ""
 
+    # 讯飞超拟人数字人交互 WebAPI
+    digital_human_app_id: str = ""
+    digital_human_api_key: str = ""
+    digital_human_api_secret: str = ""
+    digital_human_avatar_id: str = "cnrn9jgi2000000005"  # 诗雅
+    digital_human_ws_url: str = "wss://sparkos.xfyun.cn/v1/openapi/chat"
+
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"

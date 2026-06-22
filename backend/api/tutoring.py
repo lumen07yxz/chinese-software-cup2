@@ -91,8 +91,8 @@ async def ask_question(
 ):
     """流式智能答疑 —— 融合 RAG + Mermaid 图表 + 资源推荐 + 联网搜索 + 来源引用 + 难度自适应"""
     # RAG 检索相关课程内容（知识库 + 用户导入文档）
-    results = rag_service.search(req.question, top_k=4)
-    context = "\n\n".join([r["content"][:500] for r in results])
+    results = rag_service.search(req.question, top_k=8)
+    context = "\n\n".join([r["content"][:800] for r in results])
 
     # 构建来源引用编号（D23）
     sources: list[str] = []
@@ -107,16 +107,15 @@ async def ask_question(
         f"[{i+1}] {s}" for i, s in enumerate(sources)
     ) if sources else "（无可用来源）"
 
-    # 联网搜索补充（如果 RAG 结果不够充分）
+    # 联网搜索补充（始终执行，提供最新信息）
     web_context = ""
-    if len(context) < 200:
-        try:
-            web_results = await web_search_service.search(req.question, top_k=3)
-            web_context = "\n\n".join([
-                f"[网络搜索] {r['snippet']}" for r in web_results if r.get('snippet')
-            ])[:2000]
-        except Exception:
-            web_context = ""
+    try:
+        web_results = await web_search_service.search(req.question, top_k=5)
+        web_context = "\n\n".join([
+            f"[网络搜索|{r.get('title', '')}] {r['snippet']}" for r in web_results if r.get('snippet')
+        ])[:3000]
+    except Exception:
+        web_context = ""
 
     # 检索相关学习资源
     try:
@@ -162,9 +161,9 @@ flowchart TD
 课程参考内容（标注了来源编号 [N]）：
 {sources_text}
 
-{context[:2000]}
+{context[:4000]}
 
-{("网络补充信息（最新）：\n" + web_context[:1500]) if web_context else ""}
+{("网络补充信息（最新）：\n" + web_context[:3000]) if web_context else ""}
 
 学生已有资源：
 {resource_text if resource_text else '暂无'}"""

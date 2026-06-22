@@ -6,10 +6,14 @@ export default function CodeBlock({ className, children }: { className?: string;
   const ref = useRef<HTMLElement>(null);
   const match = /language-(\w+)/.exec(className || '');
   const codeStr = String(children).replace(/\n$/, '');
+  const isMermaid = match && match[1] === 'mermaid';
 
-  if (match && match[1] === 'mermaid') return <MermaidBlock code={codeStr} />;
+  // hooks 必须无条件调用，不能放在 early return 之后
+  useEffect(() => {
+    if (ref.current && !isMermaid) Prism.highlightElement(ref.current);
+  }, [codeStr, isMermaid]);
 
-  useEffect(() => { if (ref.current) Prism.highlightElement(ref.current); }, [codeStr]);
+  if (isMermaid) return <MermaidBlock code={codeStr} />;
 
   return <code ref={ref} className={className}>{children}</code>;
 }

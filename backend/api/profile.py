@@ -37,6 +37,7 @@ async def get_profile(current_user: User = Depends(get_current_user)):
                 "learning_goal": profile.learning_goal,
                 "available_time": profile.available_time,
                 "interests": profile.interests,
+                "conversation_summary": profile.conversation_summary,
             }
         }
 

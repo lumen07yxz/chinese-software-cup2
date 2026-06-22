@@ -11,10 +11,12 @@ interface ChatState {
   messages: Message[];
   isStreaming: boolean;
   conversationId: number | null;
+  mode: 'text' | 'voice';
   addMessage: (msg: Omit<Message, 'id' | 'timestamp'>) => void;
   appendToLast: (chunk: string) => void;
   setStreaming: (v: boolean) => void;
   setConversationId: (id: number | null) => void;
+  setMode: (mode: 'text' | 'voice') => void;
   loadMessages: (msgs: { role: string; content: string }[]) => void;
   clearMessages: () => void;
 }
@@ -25,6 +27,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   conversationId: null,
+  mode: 'text',
 
   addMessage: (msg) => {
     const newMsg: Message = {
@@ -49,6 +52,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setStreaming: (v) => set({ isStreaming: v }),
 
   setConversationId: (id) => set({ conversationId: id }),
+
+  setMode: (mode) => set({ mode }),
 
   loadMessages: (msgs) => {
     const mapped = msgs.map((m, i) => ({

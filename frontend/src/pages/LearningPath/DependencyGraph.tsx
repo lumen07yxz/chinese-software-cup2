@@ -44,6 +44,7 @@ export default function DependencyGraph({
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [transform, setTransform] = useState({ scale: 1, tx: 0, ty: 0 })
   const dragRef = useRef({ dragging: false, lastX: 0, lastY: 0 })
+  const [isDragging, setIsDragging] = useState(false)
 
   // Compute layout
   const layers = computeLayers(nodes, edges)
@@ -62,6 +63,16 @@ export default function DependencyGraph({
   }, [])
 
   const positions = computePositions(nodes, layers, canvasWidth)
+
+  // 空数据保护
+  if (!nodes.length || positions.size === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-sm text-muted">
+        暂无节点数据
+      </div>
+    )
+  }
+
   const viewBox = computeViewBox(positions)
   const completedSet = new Set(completedNodes)
   const connectedNodes = hoveredNode ? getConnectedNodes(hoveredNode, edges) : null
@@ -84,6 +95,7 @@ export default function DependencyGraph({
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
+    setIsDragging(true)
     dragRef.current = { dragging: true, lastX: e.clientX, lastY: e.clientY }
   }, [])
 
@@ -97,6 +109,7 @@ export default function DependencyGraph({
   }, [])
 
   const onMouseUp = useCallback(() => {
+    setIsDragging(false)
     dragRef.current.dragging = false
   }, [])
 
@@ -132,7 +145,8 @@ export default function DependencyGraph({
         </filter>
       </defs>
 
-      <g transform={`translate(${transform.tx / transform.scale},${transform.ty / transform.scale}) scale(${transform.scale})`}>
+      <g transform={`translate(${transform.tx}, ${transform.ty}) scale(${transform.scale})`}
+         style={{ transition: isDragging ? 'none' : 'transform 0.12s ease-out' }}>
         {/* Edges */}
         {edges.map((edge, i) => {
           const fromPos = positions.get(edge.from)

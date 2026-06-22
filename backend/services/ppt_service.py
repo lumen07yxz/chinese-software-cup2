@@ -1,23 +1,17 @@
 """讯飞 AI PPT 生成 WebAPI 服务
 
-接口：
-  POST /api/ppt (zwapi.xfyun.cn)
-  GET  /api/ppt?sid=xxx  查询进度
-
-认证：
-  1. signature = base64(hmac-sha256(APISecret, signature_origin))
-  2. authorization_origin = api_key="APPID", algorithm="hmac-sha256", headers="host date request-line", signature="{signature}"
-  3. authorization = base64(authorization_origin)
-  4. 作为 URL 查询参数传递：?authorization=xxx&date=xxx&host=xxx
+认证: base64(hmac-sha1(APISecret, md5(APPID + timestamp)))
+Header: {appId, timestamp, signature}
+路径:
+  POST /api/ppt/v2/create    (multipart/form-data) → {"code":0,"data":{"sid":"..."}}
+  GET  /api/ppt/v2/progress?sid=xxx → {"code":0,"data":{"pptUrl":"...","pptStatus":"done"}}
 """
 
-import base64
 import hashlib
 import hmac
+import base64
 import logging
-from datetime import datetime, timezone
-from email.utils import format_datetime
-from urllib.parse import urlencode
+import time
 
 import httpx
 
@@ -28,79 +22,59 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://zwapi.xfyun.cn"
 
 
-def _sign(method: str, path: str, query: str = "") -> tuple[str, str]:
-    """生成讯飞 API 签名的 authorization 和 date
-
-    Returns:
-        (authorization_b64, date_rfc1123)
-    """
-    api_key = settings.ppt_app_id
-    api_secret = settings.ppt_api_secret
-    host = "zwapi.xfyun.cn"
-
-    date = format_datetime(datetime.now(timezone.utc), usegmt=True)
-    request_line = f"{method} {path}{('?' + query) if query else ''} HTTP/1.1"
-    signature_origin = f"host: {host}\ndate: {date}\n{request_line}"
-    signature_bytes = hmac.new(
-        api_secret.encode("utf-8"),
-        signature_origin.encode("utf-8"),
-        hashlib.sha256,
-    ).digest()
-    signature = base64.b64encode(signature_bytes).decode("utf-8")
-
-    auth_origin = (
-        f'api_key="{api_key}", algorithm="hmac-sha256", '
-        f'headers="host date request-line", signature="{signature}"'
-    )
-    authorization = base64.b64encode(auth_origin.encode("utf-8")).decode("utf-8")
-    return authorization, date
-
-
 class PPTService:
-    """讯飞 AI PPT 生成服务"""
-
     TIMEOUT = 30.0
-    POLL_TIMEOUT = 60.0
 
     @property
     def available(self) -> bool:
         return bool(settings.ppt_app_id and settings.ppt_api_secret)
 
-    async def create_ppt(
-        self, query: str, language: str = "cn", search: int = 1
-    ) -> dict:
-        """发起 PPT 生成任务，返回 sid"""
+    def _auth_headers(self, content_type: str = "application/json; charset=utf-8") -> dict:
+        ts = int(time.time())
+        raw = hashlib.md5((settings.ppt_app_id + str(ts)).encode("utf-8")).hexdigest()
+        signature = base64.b64encode(
+            hmac.new(settings.ppt_api_secret.encode("utf-8"), raw.encode("utf-8"), hashlib.sha1).digest()
+        ).decode("utf-8")
+        return {"appId": settings.ppt_app_id, "timestamp": str(ts), "signature": signature, "Content-Type": content_type}
+
+    def _build_multipart(self, fields: dict) -> tuple[str, str]:
+        """构造 multipart/form-data 正文和 content-type"""
+        boundary = "----WebKit" + hashlib.md5(str(time.time()).encode()).hexdigest()[:16]
+        parts = []
+        for k, v in fields.items():
+            parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}")
+        parts.append(f"--{boundary}--")
+        body = "\r\n".join(parts) + "\r\n"
+        return body, f"multipart/form-data; boundary={boundary}"
+
+    async def create_ppt(self, query: str, template_id: str = "202407179097C2D", search: int = 1) -> dict:
+        """创建 PPT 生成任务，返回 sid"""
         if not self.available:
             raise RuntimeError("PPT_APP_ID / PPT_API_SECRET 未配置")
 
-        path = "/api/ppt"
-        auth, date = _sign("POST", path)
-        params = urlencode({"authorization": auth, "date": date, "host": "zwapi.xfyun.cn"})
-        url = f"{BASE_URL}{path}?{params}"
-
-        body = {
-            "header": {
-                "appId": settings.ppt_app_id,
-                "language": language,
-            },
-            "body": {
-                "query": query,
-                "isCard": 1,
-                "search": search,
-            },
+        fields = {
+            "query": query,
+            "templateId": template_id,
+            "author": "智学AI",
+            "isCardNote": "True",
+            "search": "True" if search else "False",
+            "isFigure": "True",
+            "aiImage": "normal",
         }
+        body, ct = self._build_multipart(fields)
+        headers = self._auth_headers(ct)
 
         try:
             async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-                resp = await client.post(url, json=body)
+                resp = await client.post(f"{BASE_URL}/api/ppt/v2/create", content=body, headers=headers)
                 data = resp.json()
             logger.info("createPPT 响应: %s", data)
-            code = data.get("header", {}).get("code", -1)
-            if code != 0:
-                msg = data.get("header", {}).get("message", str(data))
-                raise RuntimeError(f"PPT 生成失败: {msg}")
-            sid = data.get("header", {}).get("sid", "")
-            return {"sid": sid, "code": code}
+            if data.get("code") != 0:
+                raise RuntimeError(f"PPT 生成失败: {data}")
+            sid = data.get("data", {}).get("sid", "")
+            if not sid:
+                raise RuntimeError(f"未获取到 sid: {data}")
+            return {"sid": sid, "code": data["code"]}
         except httpx.HTTPError as e:
             logger.error("createPPT 网络错误: %s", e)
             raise RuntimeError(f"PPT 生成网络错误: {e}")
@@ -110,27 +84,37 @@ class PPTService:
         if not sid:
             raise RuntimeError("sid 不能为空")
 
-        path = "/api/ppt"
-        query_str = urlencode({"sid": sid})
-        auth, date = _sign("GET", path, query_str)
-        params = urlencode({"authorization": auth, "date": date, "host": "zwapi.xfyun.cn"})
-        url = f"{BASE_URL}{path}?{query_str}&{params}"
-
+        headers = self._auth_headers()
         try:
             async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-                resp = await client.get(url)
+                resp = await client.get(
+                    f"{BASE_URL}/api/ppt/v2/progress", params={"sid": sid}, headers=headers
+                )
                 data = resp.json()
             logger.info("queryProgress 响应: %s", data)
-            header = data.get("header", {})
-            code = header.get("code", -1)
-            if code != 0:
-                raise RuntimeError(f"查询失败: {header.get('message', str(data))}")
-            payload = data.get("payload", {})
+            if data.get("code") != 0:
+                raise RuntimeError(f"查询进度失败: {data}")
+            payload = data.get("data", {})
+            logger.info("queryProgress 完整 payload: %s", payload)
+            # 尝试多种可能的 URL 字段名
+            file_url = (
+                payload.get("pptUrl")
+                or payload.get("url")
+                or payload.get("fileUrl")
+                or payload.get("downloadUrl")
+                or payload.get("ppt_download_url")
+                or payload.get("previewUrl")
+                or ""
+            )
+            ppt_status = payload.get("pptStatus") or payload.get("status") or ""
             return {
-                "code": code,
-                "progress": payload.get("process", 0),
-                "fileUrl": payload.get("pptUrl", ""),
-                "pptId": payload.get("pptId", ""),
+                "code": data["code"],
+                "progress": payload.get("process") or payload.get("progress") or 0,
+                "fileUrl": file_url,
+                "pptStatus": ppt_status,
+                "totalPages": payload.get("totalPages") or 0,
+                "donePages": payload.get("donePages") or 0,
+                "_raw": payload,  # 透传原始字段，方便前端调试
             }
         except httpx.HTTPError as e:
             logger.error("queryProgress 网络错误: %s", e)

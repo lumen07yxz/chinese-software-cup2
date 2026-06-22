@@ -41,11 +41,16 @@ _api_dead = False  # 断路器：True 后直接走 n-gram 兜底
 class EmbeddingService:
     """语义向量嵌入：优先星火 API，失败时降级为 n-gram 哈希"""
 
+    @property
+    def current_method(self) -> str:
+        """当前实际使用的嵌入方法：'spark' 或 'ngram'"""
+        return "ngram" if _api_dead else "spark"
+
     # ── 公开接口 ──────────────────────────────────────────────────────
 
-    def embed(self, text: str, dim: int = 2560) -> list[float]:
-        """单条文本 → 向量"""
-        vec = self._spark_embed([text])
+    def embed(self, text: str, dim: int = 2560, is_query: bool = False) -> list[float]:
+        """单条文本 → 向量。is_query=True 时使用 query 域提升检索质量"""
+        vec = self._spark_embed([text], is_query=is_query)
         if vec is not None and len(vec) > 0 and vec[0] is not None:
             return vec[0]
         logger.warning("星火 Embedding API 不可用，降级为 n-gram 兜底")
@@ -75,9 +80,9 @@ class EmbeddingService:
 
         return all_vecs  # type: ignore[return-value]
 
-    async def a_embed(self, text: str, dim: int = 2560) -> list[float]:
+    async def a_embed(self, text: str, dim: int = 2560, is_query: bool = False) -> list[float]:
         """异步单条文本 → 向量"""
-        vec = await self._a_spark_embed([text])
+        vec = await self._a_spark_embed([text], is_query=is_query)
         if vec is not None and len(vec) > 0 and vec[0] is not None:
             return vec[0]
         logger.warning("星火 Embedding API 不可用，降级为 n-gram 兜底")
@@ -85,7 +90,7 @@ class EmbeddingService:
 
     # ── 同步 API 调用 ─────────────────────────────────────────────────
 
-    def _spark_embed(self, texts: list[str]) -> Optional[list[list[float]]]:
+    def _spark_embed(self, texts: list[str], is_query: bool = False) -> Optional[list[list[float]]]:
         """调用星火语义向量接口（同步），带断路器 + 自动重试，失败返回 None"""
         global _api_dead
         if _api_dead:
@@ -101,7 +106,7 @@ class EmbeddingService:
 
         results: list[Optional[list[float]]] = []
         for text in texts:
-            body = self._build_body(settings.spark_app_id, text)
+            body = self._build_body(settings.spark_app_id, text, is_query=is_query)
             vec: Optional[list[float]] = None
             last_err: str = ""
 
@@ -155,7 +160,7 @@ class EmbeddingService:
 
     # ── 异步 API 调用 ─────────────────────────────────────────────────
 
-    async def _a_spark_embed(self, texts: list[str]) -> Optional[list[list[float]]]:
+    async def _a_spark_embed(self, texts: list[str], is_query: bool = False) -> Optional[list[list[float]]]:
         """调用星火语义向量接口（异步），带断路器 + 自动重试，失败返回 None"""
         global _api_dead
         if _api_dead:
@@ -172,7 +177,7 @@ class EmbeddingService:
         results: list[Optional[list[float]]] = []
         async with httpx.AsyncClient(timeout=SPARK_EMBED_TIMEOUT) as client:
             for text in texts:
-                body = self._build_body(settings.spark_app_id, text)
+                body = self._build_body(settings.spark_app_id, text, is_query=is_query)
                 vec: Optional[list[float]] = None
                 last_err: str = ""
 
@@ -277,11 +282,12 @@ class EmbeddingService:
         return f"{schema}{host}{path}?{urlencode(params)}"
 
     @staticmethod
-    def _build_body(app_id: str, text: str) -> dict:
-        """构建请求体（文本 base64 编码）"""
+    def _build_body(app_id: str, text: str, is_query: bool = False) -> dict:
+        """构建请求体（文本 base64 编码）。is_query=True 时用 query 域提升检索质量"""
         import json as _json
         payload = {"messages": [{"content": text, "role": "user"}]}
         text_b64 = base64.b64encode(_json.dumps(payload).encode("utf-8")).decode()
+        domain = "query" if is_query else "para"
         return {
             "header": {
                 "app_id": app_id,
@@ -290,7 +296,7 @@ class EmbeddingService:
             },
             "parameter": {
                 "emb": {
-                    "domain": "para",  # "para"=文档嵌入 / "query"=查询嵌入
+                    "domain": domain,  # "para"=文档嵌入 / "query"=查询嵌入
                     "feature": {"encoding": "utf8"},
                 }
             },
@@ -332,15 +338,16 @@ class EmbeddingService:
 
     @staticmethod
     def _ngram_embed(text: str, dim: int = FALLBACK_DIM) -> list[float]:
-        """基于字符 2-4 gram + 双哈希的轻量嵌入（仅兜底）"""
+        """基于字符 2-5 gram + 双哈希的轻量嵌入（仅兜底）"""
         if not text:
             text = " "
-        if len(text) < 3:
-            text = text * 3
+        # 短文本填充：重复+变体以增加 n-gram 丰富度
+        if len(text) < 10:
+            text = text + " " + text[::-1] + " " + text.upper()
 
         vec = [0.0] * dim
         total = 0
-        for n in range(2, 5):
+        for n in range(2, 6):  # 2-5 gram（原来只到 4）
             for i in range(len(text) - n + 1):
                 gram = text[i : i + n]
                 h1 = int(hashlib.md5((gram + "h1").encode()).hexdigest()[:8], 16)

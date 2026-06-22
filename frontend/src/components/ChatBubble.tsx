@@ -4,6 +4,8 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { useRef, useEffect } from 'react';
 import CodeBlock from './CodeBlock';
+import ThinkingIndicator from './ThinkingIndicator';
+import AIIcon from './AIIcon';
 import type { Message } from '../stores/chatStore';
 
 interface Props {
@@ -14,6 +16,7 @@ interface Props {
 export default function ChatBubble({ message, isStreaming }: Props) {
   const isUser = message.role === 'user';
   const contentRef = useRef<HTMLDivElement>(null);
+  const isEmpty = !message.content;
 
   useEffect(() => {
     if (contentRef.current) {
@@ -21,25 +24,32 @@ export default function ChatBubble({ message, isStreaming }: Props) {
     }
   }, [message.content]);
 
+  // 流式输出为空时显示思考中动画
+  if (!isUser && isStreaming && isEmpty) {
+    return (
+      <div className="flex gap-3 mb-5">
+        <ThinkingIndicator />
+      </div>
+    );
+  }
+
   return (
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''} mb-5`}>
       {/* Avatar */}
-      <div
-        className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-medium
-          ${isUser
-            ? 'bg-amber text-warm-white'
-            : 'bg-ink text-warm-white'
-          }`}
-      >
-        {isUser ? '我' : 'AI'}
-      </div>
+      {isUser ? (
+        <div className="w-9 h-9 rounded-full bg-cream flex items-center justify-center flex-shrink-0 text-sm font-medium text-ink">
+          我
+        </div>
+      ) : (
+        <AIIcon size={36} />
+      )}
 
       {/* Bubble */}
       <div
         className={`max-w-[80%] min-w-0 px-4 py-3 rounded-lg text-[15px] leading-relaxed
           ${isUser
             ? 'bg-ink text-warm-white'
-            : 'bg-surface border border-border text-gray-800'
+            : 'bg-surface border border-border text-ink'
           }`}
       >
         {isUser ? (
@@ -62,7 +72,8 @@ export default function ChatBubble({ message, isStreaming }: Props) {
               {message.content}
             </ReactMarkdown>
             {isStreaming && (
-              <span className="inline-block w-1.5 h-4 bg-amber animate-pulse ml-0.5 align-middle" />
+              <span className="inline-block w-[3px] h-4 bg-amber rounded-full ml-0.5 align-middle"
+                style={{ animation: 'cursorBlink 0.8s ease-in-out infinite' }} />
             )}
           </div>
         )}

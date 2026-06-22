@@ -13,6 +13,7 @@ import AssessmentPage from './pages/Assessment'
 import PPTPage from './pages/PPT'
 import ProfilePage from './pages/Profile'
 import LoginPage from './pages/Login'
+import ErrorBoundary from './components/ErrorBoundary'
 import RegisterPage from './pages/Register'
 import { useAuthStore } from './stores/authStore'
 import { useProfileStore } from './stores/profileStore'
@@ -84,10 +85,10 @@ function App() {
         <Route path="/chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
         <Route path="/quiz" element={<ProtectedRoute><QuizPage /></ProtectedRoute>} />
         <Route path="/wrong-answer-book" element={<ProtectedRoute><WrongAnswerBookPage /></ProtectedRoute>} />
-        <Route path="/resources" element={<ProtectedRoute><ResourcesPage /></ProtectedRoute>} />
+        <Route path="/resources" element={<ProtectedRoute><ErrorBoundary title="学习资源加载出错"><ResourcesPage /></ErrorBoundary></ProtectedRoute>} />
         <Route path="/knowledge-base" element={<ProtectedRoute><KnowledgeBasePage /></ProtectedRoute>} />
         <Route path="/learning-path" element={<ProtectedRoute><LearningPathPage /></ProtectedRoute>} />
-        <Route path="/assessment" element={<ProtectedRoute><AssessmentPage /></ProtectedRoute>} />
+        <Route path="/assessment" element={<ProtectedRoute><ErrorBoundary title="学习评估加载出错"><AssessmentPage /></ErrorBoundary></ProtectedRoute>} />
         <Route path="/ppt" element={<ProtectedRoute><PPTPage /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />

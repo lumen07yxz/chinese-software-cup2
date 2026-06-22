@@ -1,4 +1,11 @@
-"""网页搜索服务 — 多后端自动降级（DuckDuckGo → Bing → 百度）"""
+"""网页搜索与内容获取服务
+
+核心策略变更：不再用正则解析搜索引擎 HTML（不可靠），改为：
+1. DuckDuckGo API（海外可用）
+2. Bing 搜索（国内可用，返回标题+URL）
+3. 直接抓取搜索结果页面的正文内容（可靠）
+4. 百度百科（中文知识类查询兜底）
+"""
 
 import logging
 import re
@@ -8,44 +15,193 @@ logger = logging.getLogger(__name__)
 
 
 class WebSearchService:
-    """轻量网页搜索服务，多后端自动降级。
-
-    三级降级链路：
-    1. DuckDuckGo Instant Answer API（海外可用）
-    2. Bing HTML 搜索（中国大陆可用，无需 API Key）
-    3. 返回空结果（系统功能不受影响，仅无网络补充资料）
-    """
-
-    SEARCH_TIMEOUT = 8.0
+    SEARCH_TIMEOUT = 12.0
+    FETCH_TIMEOUT = 8.0
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
+    HEADERS = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
 
     async def search(self, query: str, top_k: int = 5) -> list[dict]:
-        """搜索网页并返回结果。
+        """搜索网页，返回带正文摘要的结果。
 
         Returns:
             [{"title": str, "snippet": str, "url": str}, ...]
-            失败时返回空列表（不抛异常）
         """
-        # 第一级：DuckDuckGo API
-        results = await self._try_duckduckgo_api(query, top_k)
+        # 第一级：Bing 搜索获取真实 URL（国内稳定）
+        results = await self._search_bing_get_urls(query, top_k)
+        if results:
+            # 第二步：逐个抓取页面正文内容
+            enriched = await self._fetch_page_contents(results, max_pages=top_k)
+            return enriched
+
+        # 第二级：DuckDuckGo API（海外可用）
+        results = await self._search_duckduckgo(query, top_k)
+        if results:
+            enriched = await self._fetch_page_contents(results, max_pages=min(3, top_k))
+            return enriched
+
+        # 第三级：百度百科兜底（中文知识查询）
+        results = await self._search_baike(query, top_k)
         if results:
             return results
 
-        # 第二级：Bing HTML 搜索
-        results = await self._try_bing_html(query, top_k)
-        if results:
-            return results
-
-        logger.info("所有搜索后端均不可用，跳过联网搜索（不影响核心功能）")
+        logger.info("所有搜索后端均不可用")
         return []
 
-    # ── DuckDuckGo Instant Answer API ──────────────────────────────────
+    # ── Bing 搜索：只提取标题和 URL ─────────────────────────────────
 
-    async def _try_duckduckgo_api(self, query: str, top_k: int) -> list[dict]:
-        """DuckDuckGo Instant Answer API（海外可用，国内 GFW 封锁）"""
+    async def _search_bing_get_urls(self, query: str, top_k: int) -> list[dict]:
+        """Bing 搜索 — 提取标题和 URL，尝试多个 Bing 端点"""
+        if not query.strip():
+            return []
+
+        # 尝试多个 Bing 端点
+        endpoints = [
+            "https://cn.bing.com/search",
+            "https://www.bing.com/search",
+        ]
+
+        for endpoint in endpoints:
+            results = await self._bing_fetch(endpoint, query, top_k)
+            if results:
+                return results
+        return []
+
+    async def _bing_fetch(self, endpoint: str, query: str, top_k: int) -> list[dict]:
+        """单个 Bing 端点的搜索实现"""
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.SEARCH_TIMEOUT, follow_redirects=True
+            ) as client:
+                resp = await client.get(
+                    endpoint,
+                    params={"q": query, "count": max(top_k * 3, 15), "setlang": "zh-CN"},
+                    headers=self.HEADERS,
+                )
+                resp.raise_for_status()
+                html = resp.text
+
+            # 至少要有一定长度的 HTML 才算有效响应
+            if len(html) < 500:
+                logger.debug("Bing 响应过短 (%d bytes)，可能被拦截", len(html))
+                return []
+
+            results = []
+            # 提取搜索结果链接 — 多种模式
+            link_patterns = [
+                # 模式1: h2 > a（标准搜索结果标题）
+                r'<h2[^>]*>\s*<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+                # 模式2: b_algo 块内的链接
+                r'<li class="b_algo"[^>]*>.*?<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+            ]
+
+            skip_domains = {
+                "bing.com", "microsoft.com", "msn.com",
+                "go.microsoft.com", "www.bing.com", "cn.bing.com",
+            }
+
+            seen_urls = set()
+            for pattern in link_patterns:
+                links = re.findall(pattern, html, re.DOTALL)
+                for url, title_html in links:
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    if any(d in url for d in skip_domains):
+                        continue
+                    if url.startswith("javascript:"):
+                        continue
+                    title = re.sub(r'<[^>]+>', '', title_html).strip()
+                    if title and len(title) > 3:
+                        results.append({"title": title[:100], "snippet": "", "url": url})
+                    if len(results) >= top_k:
+                        break
+                if len(results) >= top_k:
+                    break
+
+            if results:
+                logger.debug("Bing(%s) 提取到 %d 个链接", endpoint, len(results))
+            return results
+
+        except httpx.TimeoutException:
+            logger.debug("Bing(%s) 超时", endpoint)
+        except httpx.HTTPStatusError as e:
+            logger.debug("Bing(%s) HTTP %s", endpoint, e.response.status_code)
+        except Exception as e:
+            logger.debug("Bing(%s) 异常: %s", endpoint, e)
+        return []
+
+    # ── 抓取网页正文内容 ────────────────────────────────────────────
+
+    async def _fetch_page_contents(self, results: list[dict], max_pages: int = 3) -> list[dict]:
+        """逐个抓取搜索结果页面，提取正文文本"""
+        import asyncio
+
+        async def fetch_one(client: httpx.AsyncClient, result: dict) -> dict:
+            url = result.get("url", "")
+            if not url:
+                return result
+            try:
+                resp = await client.get(url, headers=self.HEADERS, follow_redirects=True)
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" not in content_type and "text/plain" not in content_type:
+                    return result
+                text = self._extract_text_from_html(resp.text)
+                if text and len(text) > 50:
+                    result["snippet"] = text[:1500]
+                return result
+            except Exception as e:
+                logger.debug("抓取 %s 失败: %s", url[:50], e)
+                return result
+
+        # 并发抓取前 max_pages 个页面
+        async with httpx.AsyncClient(timeout=self.FETCH_TIMEOUT, follow_redirects=True) as client:
+            tasks = [fetch_one(client, r) for r in results[:max_pages]]
+            fetched = await asyncio.gather(*tasks, return_exceptions=True)
+            enriched = []
+            for i, r in enumerate(fetched):
+                if isinstance(r, Exception):
+                    enriched.append(results[i])
+                else:
+                    enriched.append(r)
+            # 追加未抓取的结果
+            enriched.extend(results[max_pages:])
+        return enriched
+
+    def _extract_text_from_html(self, html: str) -> str:
+        """从 HTML 提取正文文本（去除 script/style/nav/footer 等噪音）"""
+        # 1. 移除 script / style / nav / footer / header 等非正文标签
+        html = re.sub(r'<(script|style|nav|footer|header|aside|noscript)[^>]*>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        # 移除 HTML 注释
+        html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+        # 移除所有标签
+        text = re.sub(r'<[^>]+>', ' ', html)
+        # 2. 清理空白
+        text = re.sub(r'\s+', ' ', text).strip()
+        # 3. 去重：连续重复的句子（很多网页有隐藏的重复水印文字）
+        sentences = text.split('。')
+        seen = set()
+        unique = []
+        for s in sentences:
+            s = s.strip()
+            if s and len(s) > 5 and s not in seen:
+                seen.add(s)
+                unique.append(s)
+        text = '。'.join(unique)
+        # 4. 限制长度
+        return text[:2000]
+
+    # ── DuckDuckGo API ──────────────────────────────────────────────
+
+    async def _search_duckduckgo(self, query: str, top_k: int) -> list[dict]:
+        """DuckDuckGo Instant Answer API"""
         if not query.strip():
             return []
         try:
@@ -62,7 +218,7 @@ class WebSearchService:
             if abstract:
                 results.append({
                     "title": data.get("Heading", "搜索结果"),
-                    "snippet": abstract[:500],
+                    "snippet": abstract[:1500],
                     "url": data.get("AbstractURL", ""),
                 })
 
@@ -70,7 +226,7 @@ class WebSearchService:
                 if "Text" in item:
                     results.append({
                         "title": item["Text"].split(" - ")[0][:80],
-                        "snippet": item["Text"][:500],
+                        "snippet": item["Text"][:1500],
                         "url": item.get("FirstURL", ""),
                     })
                 elif "Topics" in item:
@@ -78,75 +234,77 @@ class WebSearchService:
                         if "Text" in sub:
                             results.append({
                                 "title": sub["Text"].split(" - ")[0][:80],
-                                "snippet": sub["Text"][:500],
+                                "snippet": sub["Text"][:1500],
                                 "url": sub.get("FirstURL", ""),
                             })
 
             return results[:top_k]
 
         except httpx.TimeoutException:
-            logger.debug("DuckDuckGo API 超时（可能被 GFW 阻断）")
+            logger.debug("DuckDuckGo API 超时")
         except httpx.HTTPStatusError as e:
             logger.debug("DuckDuckGo API HTTP %s", e.response.status_code)
         except Exception as e:
             logger.debug("DuckDuckGo API 异常: %s", e)
         return []
 
-    # ── Bing HTML 搜索（中国大陆可用）─────────────────────────────────
+    # ── 百度百科兜底 ────────────────────────────────────────────────
 
-    async def _try_bing_html(self, query: str, top_k: int) -> list[dict]:
-        """Bing HTML 搜索 — 解析搜索结果页（无需 API Key，国内可用）"""
+    async def _search_baike(self, query: str, top_k: int) -> list[dict]:
+        """百度百科 API — 中文知识类查询的稳定兜底"""
         if not query.strip():
             return []
         try:
-            async with httpx.AsyncClient(
-                timeout=self.SEARCH_TIMEOUT, follow_redirects=True
-            ) as client:
+            async with httpx.AsyncClient(timeout=self.SEARCH_TIMEOUT, follow_redirects=True) as client:
+                # 百度百科 Open API
                 resp = await client.get(
-                    "https://cn.bing.com/search",
-                    params={"q": query, "count": top_k},
+                    "https://baike.baidu.com/api/openapi/BaikeLemmaCardApi",
+                    params={
+                        "scope": "103",
+                        "format": "json",
+                        "appid": "379020",
+                        "bk_key": query,
+                        "bk_length": "600",
+                    },
                     headers={"User-Agent": self.USER_AGENT},
                 )
-                resp.raise_for_status()
-                html = resp.text
+                data = resp.json()
 
-            results = []
-            # 解析 Bing 搜索结果片段
-            # Bing 的搜索结果在 <li class="b_algo"> 中
-            blocks = re.findall(
-                r'<li class="b_algo"[^>]*>(.*?)</li>', html, re.DOTALL
-            )
-            for block in blocks[:top_k]:
-                # 提取标题
-                title_match = re.search(r'<h2[^>]*><a[^>]*>(.*?)</a>', block, re.DOTALL)
-                title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else "搜索结果"
+            abstract = data.get("abstract", "")
+            title = data.get("title", "")
+            url = data.get("url", "")
 
-                # 提取摘要
-                snippet_match = re.search(
-                    r'<(?:p|div) class="(?:b_lineclamp|b_caption)[^"]*"[^>]*>(.*?)</(?:p|div)>',
-                    block, re.DOTALL
-                )
-                if not snippet_match:
-                    snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
-                snippet = re.sub(r'<[^>]+>', '', snippet_match.group(1)).strip()[:500] if snippet_match else ""
+            if abstract and len(abstract) > 30:
+                return [{
+                    "title": title or query,
+                    "snippet": abstract[:2000],
+                    "url": url or f"https://baike.baidu.com/item/{query}",
+                }]
 
-                # 提取 URL
-                url_match = re.search(r'<a[^>]*href="(https?://[^"]+)"', block)
-                url = url_match.group(1) if url_match else ""
+            # 如果 Open API 失败，尝试直接抓取百科页面
+            return await self._fetch_baike_page(query)
 
-                if snippet:
-                    results.append({"title": title[:80], "snippet": snippet, "url": url})
-
-            if results:
-                logger.debug("Bing HTML 搜索返回 %d 条结果", len(results))
-            return results
-
-        except httpx.TimeoutException:
-            logger.debug("Bing HTML 搜索超时")
-        except httpx.HTTPStatusError as e:
-            logger.debug("Bing HTML 搜索 HTTP %s", e.response.status_code)
         except Exception as e:
-            logger.debug("Bing HTML 搜索异常: %s", e)
+            logger.debug("百度百科 API 异常: %s", e)
+            return await self._fetch_baike_page(query)
+
+    async def _fetch_baike_page(self, query: str) -> list[dict]:
+        """直接抓取百度百科搜索页面"""
+        try:
+            async with httpx.AsyncClient(timeout=self.SEARCH_TIMEOUT, follow_redirects=True) as client:
+                resp = await client.get(
+                    f"https://baike.baidu.com/item/{query}",
+                    headers=self.HEADERS,
+                )
+                text = self._extract_text_from_html(resp.text)
+                if text and len(text) > 50:
+                    return [{
+                        "title": query,
+                        "snippet": text[:2000],
+                        "url": f"https://baike.baidu.com/item/{query}",
+                    }]
+        except Exception as e:
+            logger.debug("百度百科页面抓取异常: %s", e)
         return []
 
 
