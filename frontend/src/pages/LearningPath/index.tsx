@@ -791,6 +791,10 @@ export default function LearningPathPage() {
           setSelectedNode(null);
           navigate(`/quiz?chapter=${chapter}`);
         }}
+        onStartClassroom={(nodeId) => {
+          setSelectedNode(null);
+          navigate(`/classroom/${nodeId}`);
+        }}
       />
     </div>
     </>

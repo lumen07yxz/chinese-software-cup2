@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import CodeBlock from '../../components/CodeBlock';
-import { fetchResources, fetchResourceDetail, generateResourcesStream, updateResource, type AgentStatusEvent } from '../../services/api';
+import { fetchResources, fetchResourceDetail, generateResourcesStream, updateResource, deleteResource, type AgentStatusEvent } from '../../services/api';
 import { useProfileStore } from '../../stores/profileStore';
 import { useAutoTracker, useScrollTracker } from '../../hooks/useAutoTracker';
 import { downloadText, safeFilename } from '../../utils/export';
@@ -83,6 +83,8 @@ export default function ResourcesPage() {
   const [genTopic, setGenTopic] = useState('');
   const [genChapter, setGenChapter] = useState('');
   const [genType, setGenType] = useState('doc');
+  const [preferUserDocs, setPreferUserDocs] = useState(false);
+  const [referencedDocs, setReferencedDocs] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [editingContent, setEditingContent] = useState<string | null>(null); // F32 编辑模式
   const [saving, setSaving] = useState(false);
@@ -93,6 +95,8 @@ export default function ResourcesPage() {
   const [ratings, setRatings] = useState<Record<number, 'up' | 'down'>>(() => {
     try { return JSON.parse(localStorage.getItem('resource_ratings') || '{}'); } catch { return {}; }
   });
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const { profile } = useProfileStore();
 
   // ── resizable split ─────────────────────────────────────────
@@ -225,10 +229,65 @@ export default function ResourcesPage() {
     downloadText(`${safeFilename(selected.title)}.md`, meta + selected.content);
   };
 
-  // 导出当前资源为 PDF（浏览器打印 → 另存为 PDF，复用已渲染的 KaTeX/Mermaid/Prism DOM）
+  // 导出当前资源为 PDF（新窗口渲染干净 HTML → 自动打印 → 用户选"另存为 PDF"）
   const handleExportPDF = () => {
     if (!selected?.content) return;
-    window.print();
+    const typeLabel = RESOURCE_TYPES.find((t) => t.key === selected.type)?.label || selected.type;
+    const difficulty = Math.round((selected.difficulty || 0) * 100);
+
+    // 将 Markdown 渲染为 HTML — 使用简单的 innerHTML（已渲染的 DOM 内容）
+    const contentEl = document.querySelector('.print-area .prose');
+    const contentHTML = contentEl ? contentEl.innerHTML : `<pre>${selected.content}</pre>`;
+
+    const html = `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>${selected.title}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1a1a1a; padding: 2.5rem; line-height: 1.8; font-size: 14px; }
+  h1 { font-size: 1.6em; margin-bottom: 0.5em; border-bottom: 2px solid #e5e5e5; padding-bottom: 0.3em; }
+  h2 { font-size: 1.3em; margin: 1.2em 0 0.5em; }
+  h3 { font-size: 1.1em; margin: 1em 0 0.4em; }
+  p { margin: 0.6em 0; }
+  pre { background: #f5f5f4; padding: 1em; border-radius: 6px; overflow-x: auto; font-size: 13px; margin: 0.8em 0; page-break-inside: avoid; }
+  code { font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 0.9em; background: #f0f0f0; padding: 0.15em 0.4em; border-radius: 3px; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 0.8em 0; page-break-inside: avoid; }
+  th, td { border: 1px solid #d4d4d4; padding: 0.5em 0.8em; text-align: left; font-size: 13px; }
+  th { background: #f5f5f4; font-weight: 600; }
+  blockquote { border-left: 3px solid #a3a3a3; padding-left: 1em; color: #525252; margin: 0.8em 0; }
+  ul, ol { padding-left: 1.5em; margin: 0.5em 0; }
+  li { margin: 0.2em 0; }
+  .meta { color: #737373; font-size: 12px; margin-bottom: 1.5em; padding-bottom: 1em; border-bottom: 1px solid #e5e5e5; }
+  @media print { body { padding: 0; } pre { white-space: pre-wrap; word-wrap: break-word; } }
+</style>
+</head><body>
+  <h1>${selected.title}</h1>
+  <div class="meta">类型：${typeLabel} ｜ 章节：${selected.chapter || '未分类'} ｜ 难度：${difficulty}% ｜ ${selected.created_at || ''}</div>
+  ${contentHTML}
+</body></html>`;
+
+    const win = window.open('', '_blank');
+    if (!win) { alert('请允许弹出窗口以导出 PDF'); return; }
+    win.document.write(html);
+    win.document.close();
+    // 等待渲染完成后自动触发打印
+    setTimeout(() => win.print(), 600);
+  };
+
+  // 导出当前资源为 TXT 文件
+  const handleExportTXT = () => {
+    if (!selected?.content) return;
+    const typeLabel = RESOURCE_TYPES.find((t) => t.key === selected.type)?.label || selected.type;
+    const meta = [
+      selected.title,
+      `${'='.repeat(40)}`,
+      `类型：${typeLabel} | 章节：${selected.chapter || '未分类'} | 难度：${Math.round((selected.difficulty || 0) * 100)}%`,
+      `生成时间：${selected.created_at || ''}`,
+      '',
+    ].join('\n');
+    downloadText(`${safeFilename(selected.title)}.txt`, meta + selected.content, 'text/plain');
   };
 
   // F32 编辑：进入编辑模式
@@ -276,6 +335,18 @@ export default function ResourcesPage() {
     });
   };
 
+  // 删除资源
+  const handleDelete = async () => {
+    if (!deleteConfirm) return;
+    setDeleting(true);
+    try {
+      await deleteResource(deleteConfirm);
+      setResources((prev) => prev.filter((r) => r.id !== deleteConfirm));
+      if (selected?.id === deleteConfirm) setSelected(null);
+      setDeleteConfirm(null);
+    } catch { /* silent */ } finally { setDeleting(false); }
+  };
+
   // F34 搜索过滤
   const filteredResources = (() => {
     let list = resources;
@@ -306,6 +377,7 @@ export default function ResourcesPage() {
     setAgents(INITIAL_AGENTS.map((a) => ({ ...a, status: 'done' as const, message: '等待中' })));
     setShowAgentPanel(true);
     setSelected(null);
+    setReferencedDocs([]);
 
     try {
       await generateResourcesStream(
@@ -316,6 +388,7 @@ export default function ResourcesPage() {
           chapter: genChapter,
           difficulty: 0.5,
           profile: profile || {},
+          prefer_user_docs: preferUserDocs,
         },
         // onChunk
         (chunk) => setStreamText((prev) => prev + chunk),
@@ -331,6 +404,8 @@ export default function ResourcesPage() {
         },
         // onAgentStatus
         handleAgentStatus,
+        // onUserDocsReferenced
+        (titles) => setReferencedDocs(titles),
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '网络错误';
@@ -429,6 +504,15 @@ export default function ResourcesPage() {
                 placeholder="章节（可选）"
                 className="w-36 px-3 py-2 text-[14px] bg-surface border border-border rounded-md outline-none focus:border-ink transition-colors"
               />
+              <label className="flex items-center gap-1.5 text-[12px] text-muted whitespace-nowrap cursor-pointer select-none" title="勾选后将优先参考你导入的知识库文档来生成内容">
+                <input
+                  type="checkbox"
+                  checked={preferUserDocs}
+                  onChange={(e) => setPreferUserDocs(e.target.checked)}
+                  className="rounded border-border w-3.5 h-3.5 accent-ink"
+                />
+                📚 知识库优先
+              </label>
               <button
                 onClick={handleGenerate}
                 disabled={!genTopic.trim() || generating}
@@ -518,6 +602,19 @@ export default function ResourcesPage() {
                     </div>
                   ))}
                 </div>
+                {/* 引用了哪些用户知识库文档 */}
+                {referencedDocs.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-border/50">
+                    <span className="text-[11px] text-muted font-medium">📚 已引用知识库文档：</span>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {referencedDocs.map((title, i) => (
+                        <span key={i} className="text-[11px] px-2 py-0.5 bg-ink/5 text-ink rounded-full border border-ink/10">
+                          {title}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Streaming output */}
@@ -676,10 +773,18 @@ export default function ResourcesPage() {
                 <button
                   onClick={handleExportPDF}
                   disabled={!selected.content}
-                  title="打印 / 另存为 PDF"
+                  title="导出 PDF（新窗口打开，可另存为 PDF）"
                   className="text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-cream transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   导出 PDF
+                </button>
+                <button
+                  onClick={handleExportTXT}
+                  disabled={!selected.content}
+                  title="下载 TXT 纯文本文件"
+                  className="text-xs px-2 py-1 rounded text-muted hover:text-ink hover:bg-cream transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  下载 TXT
                 </button>
                 {/* F32 编辑按钮 */}
                 <button
@@ -704,6 +809,13 @@ export default function ResourcesPage() {
                   className={`text-xs px-1.5 py-1 rounded transition-colors ${ratings[selected.id] === 'down' ? 'text-red-500 bg-red-50' : 'text-muted hover:text-ink hover:bg-cream'}`}
                 >
                   👎
+                </button>
+                <button
+                  onClick={() => setDeleteConfirm(selected.id)}
+                  title="删除资源"
+                  className="text-xs px-1.5 py-1 rounded text-muted hover:text-red-500 hover:bg-red-50 transition-colors"
+                >
+                  🗑️
                 </button>
                 <button
                   onClick={() => setSelected(null)}
@@ -782,6 +894,28 @@ export default function ResourcesPage() {
           </div>
         )}
       </div>
+
+      {/* 删除确认弹窗 */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setDeleteConfirm(null)}>
+          <div className="bg-warm-white rounded-xl shadow-lg border border-border w-full max-w-sm p-6" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-ink mb-2">确认删除</h3>
+            <p className="text-[13px] text-muted mb-4">
+              确定要删除「{resources.find(r => r.id === deleteConfirm)?.title || ''}」吗？此操作不可撤销。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 text-[13px] text-muted hover:text-ink rounded-lg transition-colors">
+                取消
+              </button>
+              <button onClick={handleDelete} disabled={deleting}
+                className="px-4 py-2 text-[13px] bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50">
+                {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

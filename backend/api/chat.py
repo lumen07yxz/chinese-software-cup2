@@ -7,10 +7,13 @@ from fastapi.responses import StreamingResponse
 
 from sqlalchemy import select
 from db import async_session
-from models import User, Conversation, ConversationMessage, StudentProfile
+from models import User, Conversation, ConversationMessage, StudentProfile, RealtimeLearningState
 from auth import get_current_user
 from services.spark_service import spark_service
+from services.realtime_state_service import realtime_state_service
+from services.rag_service import rag_service
 from agents.profile_coordinator import ProfileCoordinator
+from prompts import chat_system
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -84,30 +87,88 @@ async def chat_stream(
             }
 
     # 构建消息列表（history 不含当前消息，无重复）
-    messages = list(history) + [{"role": "user", "content": message}]
+        messages = list(history) + [{"role": "user", "content": message}]
 
-    # 构建带上下文的系统提示词
-    system_prompt_content = build_system_prompt(existing_profile, db_profile, message)
-    system_prompt = {"role": "system", "content": system_prompt_content}
-    full_messages = [system_prompt] + messages
+        # ── RAG 知识库检索 ──
+        rag_results = rag_service.search(message, top_k=6)
+        rag_context = ""
+        sources_text = ""
+        if rag_results:
+            context_parts = []
+            sources_lines = []
+            seen_titles: list[str] = []
+            for idx, r in enumerate(rag_results, 1):
+                title = r.get("metadata", {}).get("title", r.get("chapter", "未知"))
+                source_label = r.get("source", "course")
+                score = r.get("score", 0)
+                context_parts.append(f"[{title}] {r['content'][:600]}")
+                if title not in seen_titles:
+                    seen_titles.append(title)
+                    source_tag = "用户文档" if source_label == "user_upload" else "课程知识库"
+                    sources_lines.append(f"[{idx}] {title}（来源: {source_tag}, 相关度: {score:.2f}）")
+            rag_context = "\n\n".join(context_parts)
+            sources_text = "\n".join(sources_lines)
+
+        # 实时学情分析
+        realtime_state = realtime_state_service.analyze_message(message)
+        strategy = realtime_state_service.get_strategy(existing_profile, realtime_state)
+        strategy_text = realtime_state_service.format_strategy_for_prompt(strategy)
+ 
+        # 构建带上下文的系统提示词（使用集中 prompt 管理）
+        summary = db_profile.conversation_summary if db_profile else ""
+        system_prompt_content = chat_system(
+            profile=existing_profile,
+            conversation_summary=summary,
+            rag_context=rag_context,
+            sources_text=sources_text,
+        )
+        # 注入个性化教学策略
+        system_prompt_content += "\n\n" + strategy_text
+        system_prompt = {"role": "system", "content": system_prompt_content}
+        full_messages = [system_prompt] + messages
 
     async def generate():
         conversation_text = ""
         try:
+            # 发送实时学情事件
+            yield f"data: {json.dumps({'type': 'realtime_state', 'data': realtime_state}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.01)
+
             # 流式调用 LLM
             async for content_chunk in spark_service.chat_stream(full_messages):
                 conversation_text += content_chunk
                 yield f"data: {json.dumps({'type': 'text', 'content': content_chunk})}\n\n"
                 await asyncio.sleep(0.01)
 
-            # 保存助手回复 + 画像（合并为单 session，#13）
+            # 保存助手回复 + 画像 + 实时学情持久化（合并为单 session）
             async with async_session() as session:
+                # 保存用户消息
+                user_msg = ConversationMessage(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content=message,
+                )
+                session.add(user_msg)
+
+                # 保存助手回复
                 assistant_msg = ConversationMessage(
                     conversation_id=conversation_id,
                     role="assistant",
                     content=conversation_text,
                 )
                 session.add(assistant_msg)
+
+                # 持久化实时学情状态
+                rt = RealtimeLearningState(
+                    user_id=user_id,
+                    emotion=realtime_state.get("emotion", ""),
+                    confusion=realtime_state.get("confusion", 0.0),
+                    cognitive_load=realtime_state.get("cognitive_load", 0.0),
+                    confidence=realtime_state.get("confidence", 0.5),
+                    engagement=realtime_state.get("engagement", 0.5),
+                )
+                session.add(rt)
+
                 await session.commit()
 
             # D48: 根据画像完整度动态调整提取频率
@@ -140,67 +201,6 @@ async def chat_stream(
 
 
 # ── 辅助函数 ─────────────────────────────────────────────────────
-
-
-def build_system_prompt(
-    profile: dict | None,
-    db_profile: StudentProfile | None,
-    user_message: str = "",
-) -> str:
-    """构建注入画像和对话摘要的系统提示词"""
-    base = (
-        "你是一个友好的AI学习助手。请通过自然对话了解学生的："
-        "专业背景、已学课程、学习目标、每周学习时间、感兴趣的方向、难点困惑。"
-        "对话温和自然，每次只问1-2个相关问题。"
-    )
-
-    # 注入画像信息
-    if profile:
-        profile_parts = []
-        if profile.get("knowledge_base"):
-            kb = profile["knowledge_base"]
-            kb_str = "、".join(
-                f"{k}({int(v * 100)}%)" for k, v in kb.items()
-            )
-            profile_parts.append(f"知识基础：{kb_str}")
-        if profile.get("cognitive_style"):
-            profile_parts.append(f"认知风格：{profile['cognitive_style']}")
-        if profile.get("weak_points"):
-            profile_parts.append(
-                f"薄弱环节：{'、'.join(profile['weak_points'])}"
-            )
-        if profile.get("learning_goal"):
-            profile_parts.append(f"学习目标：{profile['learning_goal']}")
-        if profile.get("available_time"):
-            profile_parts.append(f"可用时间：{profile['available_time']}")
-        if profile.get("interests"):
-            profile_parts.append(
-                f"兴趣方向：{'、'.join(profile['interests'])}"
-            )
-        if profile_parts:
-            base += "\n\n已知的学生画像：\n" + "\n".join(profile_parts)
-
-    # 注入对话摘要
-    if db_profile and db_profile.conversation_summary:
-        base += f"\n\n之前的对话摘要：{db_profile.conversation_summary}"
-
-    base += "\n\n请根据以上信息，避免重复询问已知内容，有针对性地引导学生。"
-
-    # 指导 AI 输出推荐回复按钮（D46: 严格个性化，禁止通用推荐）
-    base += (
-        "\n\n重要：在回复的最后，用「」括起2-3个学生可能想问的后续问题，"
-        "例如：\n"
-        "「能具体解释一下反向传播吗」\n"
-        "「帮我出一道练习题」\n"
-        "这些会显示为按钮供学生点击。\n"
-        "【个性化要求】必须根据学生画像生成差异化推荐：\n"
-        "- 有 weak_points → 针对薄弱环节推荐复习/练习（如薄弱点是CNN，则推荐「帮我巩固CNN的池化层原理」）\n"
-        "- 有 interests → 结合兴趣方向推荐深入学习（如兴趣是NLP，则推荐「介绍一下Transformer在NLP中的应用」）\n"
-        "- 有 knowledge_base → 根据掌握度调整难度（基础弱则推荐基础概念，基础强则推荐拓展/应用）\n"
-        "- 绝对禁止每次给出「推荐一些学习资源」「帮我规划学习路径」等通用内容\n"
-        "- 每个追问必须与当前对话内容直接相关，不能脱离上下文"
-    )
-    return base
 
 
 async def _save_profile(user_id: str, profile: dict):

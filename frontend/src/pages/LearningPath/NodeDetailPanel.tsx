@@ -34,6 +34,7 @@ interface Props {
   onClose: () => void
   onToggleComplete: (nodeId: string) => void
   onStartChapterQuiz?: (chapter: string) => void
+  onStartClassroom?: (nodeId: string) => void
 }
 
 const STATUS_LABEL: Record<NodeStatus, { label: string; color: string; bg: string }> = {
@@ -57,7 +58,7 @@ function getDifficultyLabel(d: number): string {
 }
 
 export default function NodeDetailPanel({
-  node, completedNodes, edges, allNodes, onClose, onToggleComplete, onStartChapterQuiz,
+  node, completedNodes, edges, allNodes, onClose, onToggleComplete, onStartChapterQuiz, onStartClassroom,
 }: Props) {
   const completedSet = new Set(completedNodes)
   const status = node ? getNodeStatus(node.id, completedSet, edges) : 'not-started'
@@ -291,6 +292,14 @@ export default function NodeDetailPanel({
 
           {/* Action buttons */}
           <div className="space-y-2 pt-2">
+            <button
+              onClick={() => onStartClassroom?.(node.id)}
+              className="w-full py-2.5 rounded-lg text-sm font-medium transition-colors
+                bg-blue-600 text-white hover:bg-blue-700"
+            >
+              🎓 进入 AI 课堂
+            </button>
+
             {status !== 'completed' && onStartChapterQuiz && (
               <button
                 onClick={() => onStartChapterQuiz(node.id)}

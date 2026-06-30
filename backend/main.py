@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, HTMLResponse
 from contextlib import asynccontextmanager
 
 from api.chat import router as chat_router
@@ -19,6 +20,14 @@ from api.knowledge import router as knowledge_router
 from api.ppt import router as ppt_router
 from api.digital_human import router as digital_human_router
 from api.voice import router as voice_router
+from api.mastery import router as mastery_router
+from api.daily_plan import router as daily_plan_router
+from api.flashcards import router as flashcards_router
+from api.learning_journey import router as learning_journey_router
+from api.realtime_state import router as realtime_state_router
+from api.diagnose import router as diagnose_router
+from api.classroom import router as classroom_router
+from api.tasks import router as tasks_router
 from config import settings
 
 
@@ -33,6 +42,40 @@ async def lifespan(app: FastAPI):
     from models import Base
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # SQLite 增量迁移
+    try:
+        from sqlalchemy import text as _sql_text
+        async with engine.begin() as conn:
+            # ── user_documents 表迁移 ──
+            result = await conn.execute(_sql_text("PRAGMA table_info(user_documents)"))
+            existing_cols = {row[1] for row in result.fetchall()}
+            migrations = {
+                "file_format": "ALTER TABLE user_documents ADD COLUMN file_format VARCHAR(16) DEFAULT 'txt'",
+                "notes": "ALTER TABLE user_documents ADD COLUMN notes TEXT DEFAULT ''",
+                "updated_at": "ALTER TABLE user_documents ADD COLUMN updated_at DATETIME",
+                "spark_file_id": "ALTER TABLE user_documents ADD COLUMN spark_file_id VARCHAR(64) DEFAULT ''",
+                "spark_file_status": "ALTER TABLE user_documents ADD COLUMN spark_file_status VARCHAR(32) DEFAULT ''",
+                "spark_repo_id": "ALTER TABLE user_documents ADD COLUMN spark_repo_id VARCHAR(64) DEFAULT ''",
+            }
+            for col, ddl in migrations.items():
+                if col not in existing_cols:
+                    await conn.execute(_sql_text(ddl))
+                    logger.info("迁移：已追加列 user_documents.%s", col)
+
+            # ── users 表迁移（密保问题） ──
+            result2 = await conn.execute(_sql_text("PRAGMA table_info(users)"))
+            existing_user_cols = {row[1] for row in result2.fetchall()}
+            user_migrations = {
+                "security_question": "ALTER TABLE users ADD COLUMN security_question VARCHAR(128) DEFAULT ''",
+                "security_answer": "ALTER TABLE users ADD COLUMN security_answer VARCHAR(256) DEFAULT ''",
+            }
+            for col, ddl in user_migrations.items():
+                if col not in existing_user_cols:
+                    await conn.execute(_sql_text(ddl))
+                    logger.info("迁移：已追加列 users.%s", col)
+    except Exception as e:
+        logger.warning("数据库迁移跳过（可能已执行）: %s", e)
 
     # 启动时校验 JWT 密钥安全性（fail-closed：默认密钥可被伪造 Token，拒绝启动）
     if settings.jwt_secret_key == "change-me-in-production-use-a-real-secret":
@@ -134,8 +177,33 @@ app.include_router(knowledge_router)
 app.include_router(ppt_router)
 app.include_router(digital_human_router)
 app.include_router(voice_router)
+app.include_router(mastery_router)
+app.include_router(daily_plan_router)
+app.include_router(flashcards_router)
+app.include_router(learning_journey_router)
+app.include_router(realtime_state_router)
+app.include_router(diagnose_router)
+app.include_router(classroom_router)
+app.include_router(tasks_router)
 
 
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "ai-learning-system"}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """<!DOCTYPE html><html><head><meta charset="utf-8"><title>智学 API</title></head>
+<body style="font-family:system-ui;max-width:480px;margin:60px auto;text-align:center;color:#333">
+<h2>🎓 智学 — AI 个性化学习系统</h2>
+<p>后端 API 运行正常 ✅</p>
+<p style="color:#666;font-size:14px">前端页面请访问 <a href="http://localhost:5173">localhost:5173</a></p>
+<p style="color:#999;font-size:12px">API 文档：<a href="/docs">/docs</a></p>
+</body></html>"""
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """避免浏览器 404 日志"""
+    return Response(content=b"", media_type="image/x-icon")

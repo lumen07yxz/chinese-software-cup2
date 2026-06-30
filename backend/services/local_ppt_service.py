@@ -19,6 +19,7 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 
 from services.spark_service import spark_service
+from prompts import OUTLINE_PROMPT, EXPAND_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -38,44 +39,6 @@ ACCENT    = RGBColor(0xC0, 0x39, 0x2B)  # 沉稳红
 # ============================================================
 #  LLM 两阶段生成
 # ============================================================
-
-OUTLINE_PROMPT = """\
-你是一个专业的 PPT 内容策划师。根据主题生成一份 PPT 大纲。
-
-要求：
-- 8-10 页内容页（不含封面和结尾）
-- 每页有明确的 title
-- 每页有 3-5 个要点 bullets，每条 15-25 字，精炼有信息量
-- 内容由浅入深、逻辑递进
-- 第一页 type: "cover"，有 title 和 subtitle
-- 最后一页 type: "ending"
-
-严格返回以下 JSON（不要加 markdown 代码块标记）：
-{{
-  "slides": [
-    {{"type": "cover", "title": "...", "subtitle": "..."}},
-    {{"type": "content", "title": "...", "bullets": ["...", "...", "..."]}},
-    {{"type": "ending", "title": "谢谢", "subtitle": "..."}}
-  ]
-}}
-
-主题：{query}
-语言：{lang}
-"""
-
-EXPAND_PROMPT = """\
-你是 PPT 内容专家。请为以下幻灯片扩写更详细的内容。
-
-当前页面标题：{title}
-当前要点：{bullets}
-
-请在保留原有要点核心意思的基础上，将每条要点扩写为更详细的一句话描述（25-40字），并补充 1-2 条新的要点。
-如果该页面适合，可以在适当位置标注可以插入图表/示意图的建议（用 [图表: xxx] 标记）。
-
-严格返回 JSON 数组，每个元素是一个字符串：
-["要点1详细描述", "要点2详细描述", "新补充要点", "[图表: xxx]"]
-
-只返回 JSON 数组，不要加其他文字。"""
 
 
 def _call_llm(messages: list[dict], temperature: float = 0.7) -> str:

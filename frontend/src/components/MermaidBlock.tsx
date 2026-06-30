@@ -8,6 +8,7 @@ function ensureMermaidInit() {
   if (!mermaidInitialized) {
     mermaid.initialize({
       startOnLoad: false,
+      logLevel: 5 as any,  // 5=fatal，屏蔽所有非致命日志（包括 Syntax error）
       theme: 'base',
       themeVariables: {
         primaryColor: '#F5F0EB',
@@ -127,17 +128,30 @@ export default function MermaidBlock({ code }: { code: string }) {
 
     const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+    // 屏蔽 mermaid 内部的 console.error（"Syntax error in text" 等）
+    const origError = console.error;
+    const suppressed = (...args: unknown[]) => {
+      const msg = args.map(a => typeof a === 'string' ? a : '').join(' ');
+      if (msg.includes('Syntax error') || msg.includes('mermaid version')) return;
+      origError.apply(console, args);
+    };
+    console.error = suppressed;
+    let restored = false;
+    const restoreError = () => { if (!restored) { restored = true; console.error = origError; } };
     mermaid.render(id, trimmedCode).then(({ svg }) => {
+      restoreError();
       const clean = sanitizeSvg(svg);
       renderCache.set(trimmedCode, clean);
       if (containerRef.current) {
         containerRef.current.innerHTML = clean;
       }
     }).catch(() => {
+      restoreError();
       if (!renderCache.has(trimmedCode)) {
         renderCache.set(trimmedCode, '__error__');
       }
     });
+    return restoreError;
   }, [trimmedCode, valid]);
 
   // ── render ──────────────────────────────────────────────────

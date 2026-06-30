@@ -10,7 +10,7 @@ sqlalchemy[asyncio]==2.0.35
 aiosqlite==0.20.0
 
 # AI / LLM
-chromadb>=1.1.0
+chromadb==0.5.23
 
 # CrewAI for multi-agent
 crewai==0.80.0
@@ -27,3 +27,7 @@ websockets>=13.0
 
 # Local PPT generation (fallback)
 python-pptx>=1.0.0
+
+# Document parsing
+pypdf>=4.0.0
+python-docx>=1.1.0

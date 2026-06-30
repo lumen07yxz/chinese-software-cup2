@@ -15,6 +15,8 @@ export default function LoginPage() {
   const [expired, setExpired] = useState(false)
   const [usernameHint, setUsernameHint] = useState('')
   const [passwordHint, setPasswordHint] = useState('')
+  const [rememberMe, setRememberMe] = useState(false)
+  const [lockoutSeconds, setLockoutSeconds] = useState(0)
 
   useEffect(() => {
     if (sessionStorage.getItem('auth_expired') === '1') {
@@ -22,6 +24,18 @@ export default function LoginPage() {
       sessionStorage.removeItem('auth_expired')
     }
   }, [])
+
+  // 锁定倒计时
+  useEffect(() => {
+    if (lockoutSeconds <= 0) return
+    const timer = setInterval(() => {
+      setLockoutSeconds(prev => {
+        if (prev <= 1) { clearInterval(timer); return 0 }
+        return prev - 1
+      })
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [lockoutSeconds])
 
   const onUsernameChange = (val: string) => {
     setUsername(val)
@@ -45,10 +59,20 @@ export default function LoginPage() {
     e.preventDefault()
     if (!username.trim() || !password.trim()) { setError('请输入用户名和密码'); return }
     setLoading(true); setError('')
-    try { const d = await login(username.trim(), password); authLogin(d.token, d.user); navigate('/chat', { replace: true }) }
-    catch (e: unknown) { setError(e instanceof Error ? e.message : '登录失败') }
-    finally { setLoading(false) }
+    try {
+      const d = await login(username.trim(), password, rememberMe)
+      authLogin(d.token, d.user)
+      navigate('/chat', { replace: true })
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '登录失败'
+      // 解析锁定秒数
+      const match = msg.match(/(\d+)\s*秒/)
+      if (match) setLockoutSeconds(parseInt(match[1]))
+      setError(msg)
+    } finally { setLoading(false) }
   }
+
+  const isLocked = lockoutSeconds > 0
 
   return (
     <div style={{ minHeight:'100vh', background:'linear-gradient(180deg,#020712 0%,#06142e 30%,#0a1c3e 60%,#06122a 100%)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', position:'relative', padding:'40px 24px', overflow:'hidden' }}>
@@ -80,18 +104,19 @@ export default function LoginPage() {
           </div>
 
           {expired && <div style={{ display:'flex', alignItems:'center', gap:6, padding:'10px 14px', borderRadius:10, marginBottom:18, background:'#fffbeb', border:'1px solid #fef3c7', fontSize:12, color:'#d97706' }}>⚠ 登录已过期，请重新登录</div>}
-          {error && <div style={{ padding:'10px 14px', borderRadius:10, marginBottom:18, background:'#fef2f2', border:'1px solid #fecaca', fontSize:12, color:'#dc2626' }}>{error}</div>}
+          {isLocked && <div style={{ padding:'10px 14px', borderRadius:10, marginBottom:18, background:'#fef2f2', border:'1px solid #fecaca', fontSize:12, color:'#dc2626' }}>🔒 登录尝试过多，请 {lockoutSeconds} 秒后重试</div>}
+          {error && !isLocked && <div key={error} style={{ padding:'10px 14px', borderRadius:10, marginBottom:18, background:'#fef2f2', border:'1px solid #fecaca', fontSize:12, color:'#dc2626', animation:'shake .4s ease-out' }}>{error}</div>}
 
           <form onSubmit={handleSubmit}>
             <div style={{ marginBottom:16 }}>
               <label style={{ fontSize:13, fontWeight:500, color:'#374151', marginBottom:6, display:'block' }}>用户名</label>
-              <input type="text" value={username} onChange={e => onUsernameChange(e.target.value)} className="login-input" placeholder="请输入用户名" />
+              <input type="text" value={username} onChange={e => onUsernameChange(e.target.value)} className="login-input" placeholder="请输入用户名" disabled={isLocked} />
               {usernameHint && <p style={{ fontSize:11, color:'#d97706', marginTop:4 }}>{usernameHint}</p>}
             </div>
             <div style={{ marginBottom:16 }}>
               <label style={{ fontSize:13, fontWeight:500, color:'#374151', marginBottom:6, display:'block' }}>密码</label>
               <div style={{ position:'relative' }}>
-                <input type="password" value={password} onChange={e => onPasswordChange(e.target.value)} onKeyDown={handleCapsLock} onKeyUp={handleCapsLock} className="login-input" placeholder="请输入密码" />
+                <input type="password" value={password} onChange={e => onPasswordChange(e.target.value)} onKeyDown={handleCapsLock} onKeyUp={handleCapsLock} className="login-input" placeholder="请输入密码" disabled={isLocked} />
                 {capsLock && <span style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', fontSize:10, color:'#d97706', fontWeight:500, whiteSpace:'nowrap' }}>⇪ 大写锁定</span>}
               </div>
               {passwordHint && <p style={{ fontSize:11, color:'#d97706', marginTop:4 }}>{passwordHint}</p>}
@@ -103,12 +128,23 @@ export default function LoginPage() {
                 </div>
               )}
             </div>
-            <button type="submit" disabled={loading}
-              style={{ width:'100%', padding:'13px 24px', borderRadius:12, border:'none', cursor:'pointer', background:'linear-gradient(135deg,#2b8cf6,#1a6dd1)', color:'#fff', fontSize:15, fontWeight:600, fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8, boxShadow:'0 4px 14px rgba(43,140,246,0.3)', transition:'all .35s cubic-bezier(.32,.72,0,1)', opacity: loading ? 0.6 : 1 }}
-              onMouseEnter={e => { const t=e.currentTarget; if(!loading){t.style.transform='translateY(-1px)';t.style.boxShadow='0 6px 20px rgba(43,140,246,0.4)'}}}
+
+            {/* 记住我 + 忘记密码 */}
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, color:'#6b7280', cursor:'pointer', userSelect:'none' }}>
+                <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)}
+                  style={{ width:16, height:16, borderRadius:4, accentColor:'#2b8cf6', cursor:'pointer' }} />
+                记住我
+              </label>
+              <Link to="/forgot-password" style={{ fontSize:13, color:'#2b8cf6', textDecoration:'none' }}>忘记密码？</Link>
+            </div>
+
+            <button type="submit" disabled={loading || isLocked}
+              style={{ width:'100%', padding:'13px 24px', borderRadius:12, border:'none', cursor: loading || isLocked ? 'not-allowed' : 'pointer', background:'linear-gradient(135deg,#2b8cf6,#1a6dd1)', color:'#fff', fontSize:15, fontWeight:600, fontFamily:'inherit', display:'flex', alignItems:'center', justifyContent:'center', gap:8, boxShadow:'0 4px 14px rgba(43,140,246,0.3)', transition:'all .35s cubic-bezier(.32,.72,0,1)', opacity: loading || isLocked ? 0.6 : 1 }}
+              onMouseEnter={e => { const t=e.currentTarget; if(!loading && !isLocked){t.style.transform='translateY(-1px)';t.style.boxShadow='0 6px 20px rgba(43,140,246,0.4)'}}}
               onMouseLeave={e => { e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.boxShadow='0 4px 14px rgba(43,140,246,0.3)' }}>
-              {loading ? '登录中...' : '登录'}
-              <span style={{ width:24, height:24, borderRadius:7, background:'rgba(255,255,255,0.2)', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:13, transition:'all .3s' }} className="btn-arrow">→</span>
+              {loading ? <><span className="login-spinner" /> 登录中...</> : isLocked ? `请等待 ${lockoutSeconds} 秒` : '登录'}
+              {!loading && !isLocked && <span style={{ width:24, height:24, borderRadius:7, background:'rgba(255,255,255,0.2)', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:13, transition:'all .3s' }} className="btn-arrow">→</span>}
             </button>
           </form>
           <div style={{ textAlign:'center', marginTop:20, fontSize:13, color:'#9ca3af' }}>
@@ -121,11 +157,13 @@ export default function LoginPage() {
         .login-input { width:100%; padding:11px 14px; border-radius:10px; border:1.5px solid #e5e7eb; background:#f9fafb; color:#1a1a2e; font-size:14px; font-family:inherit; outline:none; box-sizing:border-box; transition: all .3s cubic-bezier(.32,.72,0,1); }
         .login-input::placeholder { color:#c0c4cc; }
         .login-input:focus { border-color:#2b8cf6 !important; background:#fff !important; box-shadow: 0 0 0 3px rgba(43,140,246,0.1) !important; }
+        .login-input:disabled { opacity:.5; cursor:not-allowed; }
         .str-seg { flex:1; height:3px; border-radius:2px; background:#e5e7eb; transition:all .3s; }
         .str-seg.weak { background:#ef4444; }
         .str-seg.mid { background:#f59e0b; }
         .str-seg.strong { background:#22c55e; }
         button:hover .btn-arrow { transform:translate(2px,-1px) scale(1.1); }
+        .login-spinner { width:16px; height:16px; border:2px solid rgba(255,255,255,0.3); border-top-color:#fff; border-radius:50%; animation:spin .6s linear infinite; }
       `}</style>
     </div>
   )

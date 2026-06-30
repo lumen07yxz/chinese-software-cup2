@@ -8,6 +8,7 @@ from db import async_session
 from models import AssessmentRecord, User
 from auth import get_current_user
 from services.spark_service import spark_service
+from prompts import ASSESSMENT_SYSTEM, assessment_prompt
 from datetime import timezone, datetime
 import json
 import asyncio
@@ -77,23 +78,13 @@ async def generate_assessment(
     current_user: User = Depends(get_current_user),
 ):
     """流式生成学习评估报告"""
-    prompt = f"""你是一位学习评估分析师。请根据以下数据生成学习效果评估报告。
-
-用户画像：{json.dumps(req.profile, ensure_ascii=False)}
-学习数据：{json.dumps(req.study_data, ensure_ascii=False)}
-
-请生成包含以下内容的评估报告（Markdown格式）：
-1. 整体学习概览（总分 + 各维度评分）
-2. 各知识点的掌握程度评估
-3. 薄弱环节诊断与原因分析
-4. 学习策略调整建议
-5. 下一步学习重点推荐"""
+    prompt = assessment_prompt(req.profile, req.study_data)
 
     async def generate():
         full_text = ""
         try:
             messages = [
-                {"role": "system", "content": "你是学习评估专家，请根据用户的学习数据生成专业、具体、个性化的评估报告。"},
+                {"role": "system", "content": ASSESSMENT_SYSTEM},
                 {"role": "user", "content": prompt},
             ]
             async for chunk in spark_service.chat_stream(messages, temperature=0.5, max_tokens=4096):

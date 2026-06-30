@@ -6,6 +6,7 @@ import re
 from typing import Optional
 
 from services.spark_service import spark_service
+from prompts import SAFETY_JUDGE_PROMPT, HALLUCINATION_JUDGE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -86,58 +87,12 @@ def add_hallucination_disclaimer(text: str) -> str:
 # 第二层：LLM-as-judge 深度审查（异步，按需调用）
 # ═══════════════════════════════════════════════════════════════════════
 
-_SAFETY_JUDGE_PROMPT = """\
-你是内容安全审查专家。请判断以下 AI 生成的教学内容是否安全，输出 JSON。
-
-审查维度：
-1. **敏感内容**：是否包含暴力、违法、歧视、色情、政治敏感等不当内容
-2. **事实准确性**：是否包含明显的事实性错误或误导信息（尤其涉及 AI/计算机科学领域）
-3. **版权合规**：是否大段复制受版权保护的内容
-4. **教学适宜性**：内容是否适合高等教育场景
-
-请严格输出以下 JSON 格式（不要输出其他内容）：
-{
-  "safe": true/false,
-  "risk_level": "low" | "medium" | "high" | "critical",
-  "issues": ["问题描述1", "问题描述2"],
-  "suggestion": "修改建议（如 safe=true 则为空字符串）"
-}
-
---- 待审查内容 ---
-{text}
---- 内容结束 ---
-"""
-
-_HALLUCINATION_JUDGE_PROMPT = """\
-你是事实核查专家。请判断以下 AI 生成内容是否存在"幻觉"（即编造、无中生有的信息）。
-
-判断标准：
-1. 内容中的概念、定义、人名、论文名、年份等是否准确
-2. 是否存在"听起来合理但实际错误"的信息
-3. 是否有过度泛化或无依据的断言
-
-参考知识库上下文（可能为空）：
-{context}
-
-请严格输出以下 JSON 格式（不要输出其他内容）：
-{
-  "has_hallucination": true/false,
-  "confidence": 0.0-1.0,
-  "issues": ["幻觉描述1", "幻觉描述2"],
-  "suggestion": "修正建议"
-}
-
---- 待审查内容 ---
-{text}
---- 内容结束 ---
-"""
-
 
 async def llm_safety_check(text: str) -> dict:
     """LLM-as-judge 内容安全审查。
     Returns: {"safe": bool, "risk_level": str, "issues": list[str], "suggestion": str}
     """
-    prompt = _SAFETY_JUDGE_PROMPT.format(text=text[:3000])
+    prompt = SAFETY_JUDGE_PROMPT.format(text=text[:3000])
     try:
         raw = await spark_service.chat(
             messages=[{"role": "user", "content": prompt}],
@@ -165,7 +120,7 @@ async def llm_hallucination_check(text: str, context: str = "") -> dict:
     """LLM-as-judge 幻觉检测。
     Returns: {"has_hallucination": bool, "confidence": float, "issues": list[str], "suggestion": str}
     """
-    prompt = _HALLUCINATION_JUDGE_PROMPT.format(text=text[:3000], context=context[:2000])
+    prompt = HALLUCINATION_JUDGE_PROMPT.format(text=text[:3000], context=context[:2000])
     try:
         raw = await spark_service.chat(
             messages=[{"role": "user", "content": prompt}],

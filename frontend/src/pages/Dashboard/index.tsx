@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../stores/authStore'
 import { useProfileStore, loadSnapshots, type ProfileSnapshot } from '../../stores/profileStore'
-import { fetchAssessment, fetchResources, fetchLearningPath, fetchConversations } from '../../services/api'
+import { fetchAssessment, fetchResources, fetchLearningPath, fetchConversations, fetchDailyPlan, fetchDueFlashcards } from '../../services/api'
 import { getDueReviews, markReviewed, type ReviewItem } from '../../utils/spacedRepetition'
 import { getTodayRecord, getStreak, checkAchievements, getUnlockedAchievements, ACHIEVEMENTS } from '../../utils/achievements'
 
@@ -35,6 +35,8 @@ export default function DashboardPage() {
   const [todayRecord] = useState(getTodayRecord())
   const [streak, setStreak] = useState(0)
   const [newAchievements, setNewAchievements] = useState<ReturnType<typeof checkAchievements>>([])
+  const [dailyPlan, setDailyPlan] = useState<{ tasks: { type: string; label: string; minutes: number; done: boolean }[] } | null>(null)
+  const [dueFlashcards, setDueFlashcards] = useState(0)
 
   useEffect(() => {
     loadDashboardData()
@@ -46,6 +48,16 @@ export default function DashboardPage() {
     // 检查新解锁的成就
     const newUnlocked = checkAchievements()
     setNewAchievements(newUnlocked)
+
+    // 加载今日计划
+    fetchDailyPlan().then((plan) => {
+      if (plan?.tasks) setDailyPlan(plan)
+    }).catch(() => {})
+
+    // 加载待复习闪卡数
+    fetchDueFlashcards().then((res) => {
+      setDueFlashcards(res.total || 0)
+    }).catch(() => {})
   }, [])
 
   const loadDashboardData = async () => {
@@ -187,15 +199,20 @@ export default function DashboardPage() {
   return (
     <div className="max-w-5xl mx-auto pb-8">
       {/* Welcome */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-ink">
-          {greeting}，{user?.nickname || '同学'} 👋
-        </h1>
-        <p className="text-sm text-muted mt-1">
-          {profile?.learning_goal
-            ? `继续朝着目标前进：${profile.learning_goal}`
-            : '开始你的个性化学习之旅吧'}
-        </p>
+      <div className="mb-8 relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-400 p-6 text-white shadow-lg shadow-indigo-200">
+        <div className="relative z-10">
+          <h1 className="text-2xl font-bold">
+            {greeting}，{user?.nickname || '同学'} 👋
+          </h1>
+          <p className="text-sm text-white/80 mt-1">
+            {profile?.learning_goal
+              ? `🎯 ${profile.learning_goal}`
+              : '🚀 开始你的个性化学习之旅吧'}
+          </p>
+        </div>
+        {/* 装饰圆 */}
+        <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/10 rounded-full blur-2xl" />
+        <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-white/10 rounded-full blur-2xl" />
       </div>
 
       {/* H42 每日打卡 + 连续学习 */}
@@ -246,12 +263,13 @@ export default function DashboardPage() {
         {stats.map((stat) => (
           <div
             key={stat.label}
-            className="rounded-xl border border-border bg-surface p-5 hover:shadow-sm transition-shadow"
+            className="rounded-xl border border-border bg-surface p-5 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 group cursor-default"
           >
             <div className="flex items-start justify-between mb-3">
-              <span className="text-2xl">{stat.icon}</span>
+              <span className="text-2xl group-hover:scale-110 transition-transform duration-200">{stat.icon}</span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-50 text-green-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">活跃</span>
             </div>
-            <div className="text-2xl font-semibold text-ink">{stat.value}</div>
+            <div className="text-2xl font-bold text-ink">{stat.value}</div>
             <div className="text-[13px] text-muted mt-0.5">{stat.label}</div>
             <div className="text-[11px] text-muted mt-1">{stat.sub}</div>
           </div>
@@ -306,6 +324,26 @@ export default function DashboardPage() {
         <div className="rounded-xl border border-border bg-surface p-5">
           <h2 className="text-sm font-medium text-ink mb-4">快捷操作</h2>
           <div className="space-y-2">
+            <button
+              onClick={() => navigate('/classroom')}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-border hover:bg-cream transition-colors text-left"
+            >
+              <span className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-lg">🎓</span>
+              <div>
+                <div className="text-[13px] font-medium text-ink">AI 课堂</div>
+                <div className="text-[11px] text-muted">沉浸式课堂学习</div>
+              </div>
+            </button>
+            <button
+              onClick={() => navigate('/flashcards')}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-border hover:bg-cream transition-colors text-left"
+            >
+              <span className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center text-lg">🃏</span>
+              <div>
+                <div className="text-[13px] font-medium text-ink">概念闪卡</div>
+                <div className="text-[11px] text-muted">间隔重复 · 巩固记忆</div>
+              </div>
+            </button>
             <button
               onClick={() => navigate('/chat')}
               className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-border hover:bg-cream transition-colors text-left"
@@ -401,6 +439,51 @@ export default function DashboardPage() {
             <p className="text-[11px] text-muted mt-2">
               点击开始复习，系统会根据掌握度自动调整下次复习时间
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* 今日学习计划 */}
+      {dailyPlan && dailyPlan.tasks.length > 0 && (
+        <div className="mb-8">
+          <div className="rounded-xl border border-indigo-200 bg-indigo-50/30 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm">📋</span>
+                <h2 className="text-sm font-medium text-ink">今日学习计划</h2>
+                <span className="text-[11px] text-muted">
+                  共 {dailyPlan.tasks.reduce((s: number, t: { minutes: number }) => s + t.minutes, 0)} 分钟
+                </span>
+              </div>
+              {dueFlashcards > 0 && (
+                <button
+                  onClick={() => navigate('/flashcards')}
+                  className="text-[12px] px-3 py-1 rounded-full bg-indigo-100 text-indigo-700 hover:bg-indigo-200 transition-colors"
+                >
+                  🃏 待复习闪卡 {dueFlashcards} 张
+                </button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {dailyPlan.tasks.map((task: { type: string; label: string; minutes: number; done: boolean }, i: number) => (
+                <div key={i} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/60 border border-indigo-100">
+                  <span className="text-sm">
+                    {task.type === 'review' ? '📖' : task.type === 'learn' ? '📗' : task.type === 'practice' ? '✏️' : task.type === 'assess' ? '📊' : '💭'}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] text-ink truncate">{task.label}</div>
+                  </div>
+                  <span className="text-[11px] text-muted flex-shrink-0">{task.minutes}min</span>
+                  {task.done && <span className="text-green-500 text-xs">✅</span>}
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => navigate('/learning-journey')}
+              className="w-full mt-3 py-2 text-[12px] text-indigo-600 hover:text-indigo-800 transition-colors border border-indigo-200 rounded-lg hover:bg-white/50"
+            >
+              开始今日学习 →
+            </button>
           </div>
         </div>
       )}

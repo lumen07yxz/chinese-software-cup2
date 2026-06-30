@@ -155,7 +155,7 @@ class WebSearchService:
                     return result
                 text = self._extract_text_from_html(resp.text)
                 if text and len(text) > 50:
-                    result["snippet"] = text[:1500]
+                    result["snippet"] = text[:3000]
                 return result
             except Exception as e:
                 logger.debug("抓取 %s 失败: %s", url[:50], e)
@@ -176,27 +176,59 @@ class WebSearchService:
         return enriched
 
     def _extract_text_from_html(self, html: str) -> str:
-        """从 HTML 提取正文文本（去除 script/style/nav/footer 等噪音）"""
-        # 1. 移除 script / style / nav / footer / header 等非正文标签
-        html = re.sub(r'<(script|style|nav|footer|header|aside|noscript)[^>]*>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        """从 HTML 提取正文文本（智能区分正文 vs 导航/侧边栏噪音）"""
+
+        # 1. 标记噪音区域并删除（比提取正文更可靠）
+        # 删除 script/style/nav/footer 等标签及其内容
+        html = re.sub(
+            r'<(script|style|nav|footer|header|aside|noscript|svg|form|iframe)[^>]*>.*?</\1>',
+            '', html, flags=re.DOTALL | re.IGNORECASE,
+        )
+        # 删除 class/id 包含噪音关键词的整块 div（从开标签到文件末尾找对应的 close）
+        noise_pattern = r'<(?:div|section|ul|ol)[^>]*(?:nav|sidebar|menu|footer|header|cookie|breadcrumb|pagination|copyright|advert|recommend|related|comment)[^>]*>'
+        html = re.sub(noise_pattern, '<div class="__noise__">', html, flags=re.IGNORECASE)
         # 移除 HTML 注释
         html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
-        # 移除所有标签
-        text = re.sub(r'<[^>]+>', ' ', html)
-        # 2. 清理空白
+
+        # 2. 提取正文区域
+        main_text = ""
+        # 尝试从特定容器提取（article > main > content > article-body）
+        for pattern in [
+            r'<article[^>]*>(.*?)</article>',
+            r'<main[^>]*>(.*?)</main>',
+            r'id="content"[^>]*>(.*?)</div>',
+            r'class="article-body"[^>]*>(.*?)</div>',
+            r'class="[^"]*markdown_views[^"]*"[^>]*>(.*?)</div>',
+            r'class="[^"]*rich_media_content[^"]*"[^>]*>(.*?)</div>',
+            r'class="[^"]*doc-content[^"]*"[^>]*>(.*?)</div>',
+        ]:
+            m = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
+            if m and len(m.group(1)) > len(main_text):
+                main_text = m.group(1)
+
+        # 如果没找到特定容器，用全文
+        if len(main_text) < 100:
+            main_text = html
+
+        # 3. 从提取的 HTML 中获取纯文本
+        text = re.sub(r'<[^>]+>', ' ', main_text)
+        text = re.sub(r'&[a-zA-Z]+;', ' ', text)
+        text = re.sub(r'&#\d+;', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
-        # 3. 去重：连续重复的句子（很多网页有隐藏的重复水印文字）
+
+        # 4. 去重：连续重复的短句
         sentences = text.split('。')
         seen = set()
         unique = []
         for s in sentences:
             s = s.strip()
-            if s and len(s) > 5 and s not in seen:
+            if s and len(s) > 8 and s not in seen:
                 seen.add(s)
                 unique.append(s)
         text = '。'.join(unique)
-        # 4. 限制长度
-        return text[:2000]
+
+        # 5. 限制长度
+        return text[:3000]
 
     # ── DuckDuckGo API ──────────────────────────────────────────────
 

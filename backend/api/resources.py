@@ -11,6 +11,7 @@ from services.safety_service import (
 )
 from auth import get_current_user
 from agents.coordinator import ResourceCoordinator
+from services.task_tracker import task_tracker
 import json
 import asyncio
 
@@ -23,6 +24,8 @@ class GenerateRequest(BaseModel):
     chapter: str = ""
     difficulty: float = 0.5
     profile: dict = {}
+    mode: str = "standard"  # "standard" | "two_stage"
+    prefer_user_docs: bool = False  # 优先使用用户知识库
 
 
 @router.get("/")
@@ -135,6 +138,10 @@ async def generate_resource_stream(
 
     编排流程：
       检索助手 (RAG) → 资源设计总监 (Orchestrator) → 专业 Agent → 安全审查员
+
+    mode="two_stage" 时使用两阶段管线：
+      Stage 1: 大纲生成（outline JSON）
+      Stage 2: 逐段内容生成（section_start / section_end）
     """
     coordinator = ResourceCoordinator(
         resource_type=req.resource_type,
@@ -142,36 +149,55 @@ async def generate_resource_stream(
         chapter=req.chapter,
         difficulty=req.difficulty,
         profile=req.profile,
+        prefer_user_docs=req.prefer_user_docs,
+        user_id=current_user.username,
     )
+
+    # 创建任务追踪
+    title_map = {"doc": "文档", "mindmap": "思维导图", "quiz": "练习题", "video": "视频", "code": "代码案例"}
+    task_label = f"生成{title_map.get(req.resource_type, '资源')}: {req.topic}"
+    task_id = task_tracker.create(
+        kind="resource_generation",
+        label=task_label,
+        user_id=current_user.username,
+        metadata={"resource_type": req.resource_type, "topic": req.topic, "mode": req.mode},
+    )
+
+    use_two_stage = req.mode == "two_stage"
 
     async def generate():
         full_content = ""
         try:
-            async for event_str in coordinator.generate():
-                # coordinator.generate() 的最后一次 yield 是纯文本而不是 JSON
-                # 需要先尝试 JSON 解析，失败则视为文本内容
+            generator = coordinator.generate_two_stage() if use_two_stage else coordinator.generate()
+            async for event_str in generator:
                 try:
                     data = json.loads(event_str)
                 except json.JSONDecodeError:
-                    # 纯文本内容（final full_output）
                     if not full_content:
                         full_content = event_str
                     continue
 
-                if isinstance(data, dict) and data.get("type") in (
-                    "agent_status", "text"
+                # 所有结构化事件原样透传
+                event_type = data.get("type", "") if isinstance(data, dict) else ""
+                if event_type in (
+                    "agent_status", "text", "outline", "section_start", "section_end"
                 ):
                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                     await asyncio.sleep(0.01)
-                    # 累积 text 内容用于存储
-                    if data.get("type") == "text":
+                    if event_type == "text":
                         full_content += data.get("content", "")
+                    if event_type == "agent_status":
+                        # 更新任务进度
+                        status_data = data.get("data", {})
+                        task_tracker.update(
+                            task_id,
+                            status="running" if status_data.get("status") == "working" else "running",
+                            message=status_data.get("message", ""),
+                        )
                 elif isinstance(data, str):
-                    # 最后返回的完整文本（备用）
                     if not full_content:
                         full_content = data
                 else:
-                    # 兜底转发
                     yield f"data: {json.dumps({'type': 'text', 'content': str(data)}, ensure_ascii=False)}\n\n"
                     if isinstance(data, str):
                         full_content += data
@@ -179,7 +205,7 @@ async def generate_resource_stream(
             if not full_content:
                 full_content = "（内容生成异常）"
 
-            # 安全审查与防幻觉（LLM 审查已在 coordinator Step 4 执行，这里汇总结果）
+            # 安全审查与防幻觉
             full_content = add_hallucination_disclaimer(full_content)
             warnings = []
 
@@ -200,13 +226,6 @@ async def generate_resource_stream(
                 yield f"data: {json.dumps({'type': 'warning', 'content': ' | '.join(warnings)}, ensure_ascii=False)}\n\n"
 
             # 存储资源
-            title_map = {
-                "doc": "课程文档",
-                "mindmap": "思维导图",
-                "quiz": "练习题",
-                "video": "视频脚本",
-                "code": "实操案例",
-            }
             async with async_session() as session:
                 resource = LearningResource(
                     user_id=current_user.username,
@@ -221,8 +240,10 @@ async def generate_resource_stream(
                 await session.commit()
                 rid = resource.id
 
+            task_tracker.complete(task_id, f"资源 #{rid} 生成完成")
             yield f"data: {json.dumps({'type': 'done', 'resource_id': rid}, ensure_ascii=False)}\n\n"
         except Exception as e:
+            task_tracker.error(task_id, str(e)[:100])
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -286,3 +307,22 @@ async def update_resource(
 
         await session.commit()
         return {"status": "updated", "id": resource_id}
+
+
+@router.delete("/{resource_id}")
+async def delete_resource(
+    resource_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    """删除学习资源"""
+    async with async_session() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(LearningResource).where(LearningResource.id == resource_id)
+        )
+        resource = result.scalar_one_or_none()
+        if not resource or resource.user_id != current_user.username:
+            raise HTTPException(status_code=404, detail="Resource not found")
+        await session.delete(resource)
+        await session.commit()
+    return {"status": "deleted"}

@@ -9,12 +9,17 @@ import OnboardingPage from './pages/Onboarding'
 import KnowledgeBasePage from './pages/KnowledgeBase'
 import ResourcesPage from './pages/Resources'
 import LearningPathPage from './pages/LearningPath'
+import LearningJourneyPage from './pages/LearningJourney'
+import ClassroomPage from './pages/Classroom'
 import AssessmentPage from './pages/Assessment'
 import PPTPage from './pages/PPT'
 import ProfilePage from './pages/Profile'
+import FlashcardsPage from './pages/Flashcards'
+import TutoringPage from './pages/Tutoring'
 import LoginPage from './pages/Login'
 import ErrorBoundary from './components/ErrorBoundary'
 import RegisterPage from './pages/Register'
+import ForgotPasswordPage from './pages/ForgotPassword'
 import { useAuthStore } from './stores/authStore'
 import { useProfileStore } from './stores/profileStore'
 import { fetchProfile } from './services/api'
@@ -80,6 +85,9 @@ function App() {
         <Route path="/register" element={
           isAuthenticated ? <Navigate to="/" replace /> : <RegisterPage />
         } />
+        <Route path="/forgot-password" element={
+          isAuthenticated ? <Navigate to="/" replace /> : <ForgotPasswordPage />
+        } />
         <Route path="/" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
         <Route path="/onboarding" element={<OnboardingGuard><OnboardingPage /></OnboardingGuard>} />
         <Route path="/chat" element={<ProtectedRoute><ChatPage /></ProtectedRoute>} />
@@ -88,6 +96,11 @@ function App() {
         <Route path="/resources" element={<ProtectedRoute><ErrorBoundary title="学习资源加载出错"><ResourcesPage /></ErrorBoundary></ProtectedRoute>} />
         <Route path="/knowledge-base" element={<ProtectedRoute><KnowledgeBasePage /></ProtectedRoute>} />
         <Route path="/learning-path" element={<ProtectedRoute><LearningPathPage /></ProtectedRoute>} />
+        <Route path="/classroom/:nodeId" element={<ProtectedRoute><ClassroomPage /></ProtectedRoute>} />
+        <Route path="/classroom" element={<ProtectedRoute><ClassroomPage /></ProtectedRoute>} />
+        <Route path="/flashcards" element={<ProtectedRoute><FlashcardsPage /></ProtectedRoute>} />
+        <Route path="/tutoring" element={<ProtectedRoute><TutoringPage /></ProtectedRoute>} />
+        <Route path="/learning-journey" element={<ProtectedRoute><LearningJourneyPage /></ProtectedRoute>} />
         <Route path="/assessment" element={<ProtectedRoute><ErrorBoundary title="学习评估加载出错"><AssessmentPage /></ErrorBoundary></ProtectedRoute>} />
         <Route path="/ppt" element={<ProtectedRoute><PPTPage /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />

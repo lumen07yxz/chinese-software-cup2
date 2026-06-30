@@ -198,6 +198,20 @@ export default function WrongAnswerBookPage() {
             </>
           )}
         </div>
+
+        {/* 让AI讲这道题 */}
+        {showAnswer && (
+          <button
+            onClick={() => {
+              const q = current
+              const prefill = `请讲解这道题：\n${q.question}\n\n我的答案：${q.studentAnswer}\n正确答案：${q.correctAnswer}\n${q.explanation ? '\n解析：' + q.explanation : ''}`
+              navigate('/tutoring', { state: { prefill } })
+            }}
+            className="w-full mt-2 px-4 py-2.5 bg-indigo-50 text-indigo-600 text-sm rounded-lg hover:bg-indigo-100 transition-colors flex items-center justify-center gap-2"
+          >
+            🤖 让 AI 讲这道题（详细解答）
+          </button>
+        )}
       </div>
     )
   }

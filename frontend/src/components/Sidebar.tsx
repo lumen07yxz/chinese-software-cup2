@@ -3,23 +3,27 @@ import { NavLink } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import SidebarStars from './SidebarStars'
 
-const navItems = [
-  { path: '/', label: '总览', icon: DashboardIcon },
-  { path: '/chat', label: '对话画像', icon: ChatIcon },
-  { path: '/quiz', label: '在线练习', icon: QuizIcon },
-  { path: '/wrong-answer-book', label: '错题本', icon: WrongAnswerIcon },
-  { path: '/resources', label: '学习资源', icon: ResourcesIcon },
-  { path: '/knowledge-base', label: '知识库', icon: KnowledgeBaseIcon },
-  { path: '/learning-path', label: '学习路径', icon: PathIcon },
-  { path: '/assessment', label: '学习评估', icon: AssessmentIcon },
-  { path: '/ppt', label: 'PPT 生成', icon: PPTIcon },
-  { path: '/profile', label: '我的画像', icon: ProfileIcon },
-]
-
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const { user, logout } = useAuthStore()
+
+  const navItems = [
+    { path: '/', label: '总览', icon: DashboardIcon },
+    { path: '/chat', label: '对话画像', icon: ChatIcon },
+    { path: '/classroom', label: 'AI 课堂', icon: ClassroomIcon },
+    { path: '/tutoring', label: 'AI 答疑', icon: TutoringIcon },
+    { path: '/flashcards', label: '概念闪卡', icon: FlashcardIcon },
+    { path: '/quiz', label: '在线练习', icon: QuizIcon },
+    { path: '/wrong-answer-book', label: '错题本', icon: WrongAnswerIcon },
+    { path: '/resources', label: '学习资源', icon: ResourcesIcon },
+    { path: '/knowledge-base', label: '知识库', icon: KnowledgeBaseIcon },
+    { path: '/learning-path', label: '学习路径', icon: PathIcon },
+    { path: '/learning-journey', label: '学习旅程', icon: JourneyIcon },
+    { path: '/assessment', label: '学习评估', icon: AssessmentIcon },
+    { path: '/ppt', label: 'PPT 生成', icon: PPTIcon },
+    { path: '/profile', label: '我的画像', icon: ProfileIcon },
+  ]
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 767px)')
@@ -33,10 +37,10 @@ export default function Sidebar() {
   }, [])
 
   const linkCls = ({ isActive }: { isActive: boolean }) =>
-    `flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-all duration-200 whitespace-nowrap
+    `flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-all duration-200 whitespace-nowrap relative
     ${isActive
-      ? 'bg-white/10 text-white font-medium'
-      : 'text-white/50 hover:text-white/80 hover:bg-white/5'
+      ? 'bg-white/15 text-white font-medium shadow-sm shadow-white/5'
+      : 'text-white/50 hover:text-white/80 hover:bg-white/5 hover:translate-x-0.5'
     }`
 
   return (
@@ -126,3 +130,7 @@ function QuizIcon(p: { className?: string }) { return <svg className={p.classNam
 function WrongAnswerIcon(p: { className?: string }) { return <svg className={p.className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 12l2 2 4-4"/></svg> }
 function KnowledgeBaseIcon(p: { className?: string }) { return <svg className={p.className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><circle cx="12" cy="10" r="2"/><line x1="12" y1="12" x2="12" y2="16"/></svg> }
 function PPTIcon(p: { className?: string }) { return <svg className={p.className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><polyline points="8 16 12 16 12 18 8 18"/></svg> }
+function JourneyIcon(p: { className?: string }) { return <svg className={p.className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> }
+function ClassroomIcon(p: { className?: string }) { return <svg className={p.className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> }
+function FlashcardIcon(p: { className?: string }) { return <svg className={p.className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="12" y1="9" x2="12" y2="15"/><line x1="9" y1="12" x2="15" y2="12"/></svg> }
+function TutoringIcon(p: { className?: string }) { return <svg className={p.className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><circle cx="12" cy="10" r="1"/><circle cx="8" cy="10" r="1"/><circle cx="16" cy="10" r="1"/></svg> }

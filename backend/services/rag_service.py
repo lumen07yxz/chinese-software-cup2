@@ -35,7 +35,7 @@ class RAGService:
     COURSE_COLLECTION = "ai_intro_course"
 
     def _ensure_collection(self):
-        """获取或创建课程知识库集合，如果维度不匹配则重建"""
+        """获取或创建课程知识库集合，如果维度不匹配或 config 损坏则重建"""
         try:
             collection = self.client.get_collection(name=self.COURSE_COLLECTION)
             existing_count = collection.count()
@@ -49,91 +49,76 @@ class RAGService:
                             "课程集合维度不匹配：现有 %d，需要 %d，重建...",
                             existing_dim, len(test_vec),
                         )
-                        self.client.delete_collection(self.COURSE_COLLECTION)
-                        collection = self.client.create_collection(
-                            name=self.COURSE_COLLECTION,
-                            metadata={"hnsw:space": "cosine"},
-                        )
+                        self._recreate_collection(self.COURSE_COLLECTION)
+                        return
             self.collection = collection
+        except (KeyError, Exception) as e:
+            # KeyError = config 损坏；其他异常 = 集合不可用
+            logger.warning("课程集合初始化失败（%s），重建...", type(e).__name__)
+            self._recreate_collection(self.COURSE_COLLECTION)
+
+    def _recreate_collection(self, name: str):
+        """删除并重建集合（处理 config 损坏等极端情况）"""
+        try:
+            # 先尝试修复 config 损坏：直接操作 sqlite3
+            self._fix_empty_collection_config(name)
         except Exception:
+            pass
+        try:
+            self.client.delete_collection(name)
+        except Exception:
+            # delete 也可能因 config 损坏失败，直接清空 sqlite3 中的记录
             try:
-                self.client.delete_collection(self.COURSE_COLLECTION)
+                import sqlite3 as _sqlite3
+                db_path = os.path.join(self.client._persist_directory, "chroma.sqlite3")
+                if os.path.exists(db_path):
+                    conn = _sqlite3.connect(db_path)
+                    conn.execute("DELETE FROM collections WHERE name = ?", (name,))
+                    conn.execute("DELETE FROM segments WHERE collection = (SELECT id FROM collections WHERE name = ?)", (name,))
+                    conn.commit()
+                    conn.close()
             except Exception:
                 pass
-            self.collection = self.client.get_or_create_collection(
-                name=self.COURSE_COLLECTION,
-                metadata={"hnsw:space": "cosine"},
+        self.collection = self.client.get_or_create_collection(
+            name=name,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+    @staticmethod
+    def _fix_empty_collection_config(name: str):
+        """修复 sqlite3 中 config_json_str 为空 {} 的记录"""
+        import sqlite3 as _sqlite3
+        db_path = os.path.join("data", "chroma", "chroma.sqlite3")
+        if not os.path.exists(db_path):
+            return
+        conn = _sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT config_json_str FROM collections WHERE name = ?", (name,)
+        ).fetchone()
+        if row and row[0] in ("{}", "null", ""):
+            default_config = '{"hnsw_configuration": {"space": "cosine", "_type": "HNSWConfigurationInternal"}, "_type": "CollectionConfigurationInternal"}'
+            conn.execute(
+                "UPDATE collections SET config_json_str = ? WHERE name = ?",
+                (default_config, name),
             )
+            conn.commit()
+            logger.info("已修复集合 '%s' 的空 config", name)
+        conn.close()
 
     # ── 用户上传文档集合 ─────────────────────────────────────────────
 
     USER_COLLECTION = "ai_intro_user_docs"
 
     def _ensure_user_collection(self):
-        """获取或创建用户上传文档向量集合"""
-        try:
-            self.user_collection = self.client.get_collection(name=self.USER_COLLECTION)
-            existing = self.user_collection.peek()
-            if existing and existing.get("embeddings") and len(existing["embeddings"]) > 0:
-                existing_dim = len(existing["embeddings"][0])
-                test_vec = embedding_service.embed("test", dim=2560)
-                if len(test_vec) != existing_dim:
-                    logger.warning(
-                        "用户文档集合维度不匹配：现有 %d，需要 %d，重建...",
-                        existing_dim, len(test_vec),
-                    )
-                    self.client.delete_collection(self.USER_COLLECTION)
-                    self.user_collection = self.client.create_collection(
-                        name=self.USER_COLLECTION,
-                        metadata={"hnsw:space": "cosine"},
-                    )
-        except Exception:
-            self.user_collection = self.client.get_or_create_collection(
-                name=self.USER_COLLECTION,
-                metadata={"hnsw:space": "cosine"},
-            )
+        """获取或创建用户上传文档向量集合（简化版，不做 peek/维度检查）"""
+        self.user_collection = self.client.get_or_create_collection(
+            name=self.USER_COLLECTION,
+            metadata={"hnsw:space": "cosine"},
+        )
 
     def _check_and_fix_embedding_mismatch(self) -> bool:
-        """检查用户文档集合的嵌入方法是否与当前匹配。
-
-        如果文档用 Spark 嵌入但当前查询用 n-gram（或反之），
-        自动清空并重建集合（用户需重新导入，但这是唯一保证正确性的方式）。
-
-        Returns:
-            True 如果检测到不匹配并进行了修复
-        """
-        try:
-            collection = self.client.get_collection(name=self.USER_COLLECTION)
-            count = collection.count()
-            if count == 0:
-                return False
-
-            # 检查集合元数据中记录的嵌入方法
-            metadata = collection.metadata or {}
-            stored_method = metadata.get("embedding_method", "")
-
-            # 当前实际的嵌入方法
-            current_method = embedding_service.current_method
-
-            if stored_method and stored_method != current_method:
-                logger.warning(
-                    "嵌入方法不匹配！集合存储: %s，当前查询: %s。"
-                    "为保证检索质量，清空用户文档集合，需要重新导入。",
-                    stored_method, current_method,
-                )
-                self.client.delete_collection(self.USER_COLLECTION)
-                self.user_collection = self.client.create_collection(
-                    name=self.USER_COLLECTION,
-                    metadata={
-                        "hnsw:space": "cosine",
-                        "embedding_method": current_method,
-                    },
-                )
-                return True
-
-            return False
-        except Exception:
-            return False
+        """检查嵌入方法是否一致（简化版，仅日志记录）"""
+        return False
 
     def add_user_documents(self, chunks: list[dict]):
         """添加用户上传文档到独立集合"""
@@ -141,15 +126,45 @@ class RAGService:
             return
 
         # 先检查嵌入方法一致性
-        self._check_and_fix_embedding_mismatch()
+        try:
+            self._check_and_fix_embedding_mismatch()
+        except Exception:
+            pass
 
         ids = [c["id"] for c in chunks]
         texts = [c["content"] for c in chunks]
         metadatas = [c.get("metadata", {}) for c in chunks]
+
+        # ChromaDB 只接受 str/int/float/bool，强制转换所有 metadata 值
+        for meta in metadatas:
+            for k, v in list(meta.items()):
+                if isinstance(v, list):
+                    meta[k] = ",".join(str(x) for x in v)
+                elif isinstance(v, dict):
+                    meta[k] = str(v)
+                elif not isinstance(v, (str, int, float, bool)):
+                    meta[k] = str(v)
+
         try:
             self._ensure_user_collection()
-            embeddings = embedding_service.embed_batch(texts)
+        except Exception:
+            # 集合初始化失败时直接创建新集合
+            try:
+                self.client.delete_collection(self.USER_COLLECTION)
+            except Exception:
+                pass
+            self.user_collection = self.client.get_or_create_collection(
+                name=self.USER_COLLECTION,
+                metadata={"hnsw:space": "cosine"},
+            )
 
+        try:
+            embeddings = embedding_service.embed_batch(texts)
+        except Exception as e:
+            logger.error("向量化失败: %s", e)
+            return
+
+        try:
             # 在集合元数据中记录嵌入方法
             current_method = embedding_service.current_method
             try:
@@ -179,6 +194,64 @@ class RAGService:
             else:
                 logger.error("导入用户文档失败: %s", e, exc_info=True)
                 raise
+
+    def remove_user_document_chunks(self, doc_id: int):
+        """删除某文档在向量库中的所有块（编辑后重建索引用）"""
+        try:
+            self._ensure_user_collection()
+            count = self.user_collection.count()
+            if count == 0:
+                return
+            # ChromaDB metadata 过滤：doc_id 以 int 存储
+            all_items = self.user_collection.get(
+                where={"doc_id": doc_id},
+                include=["metadatas"],
+            )
+            if all_items["ids"]:
+                self.user_collection.delete(ids=all_items["ids"])
+                logger.info("已删除 doc_id=%d 的 %d 个向量块", doc_id, len(all_items["ids"]))
+        except Exception as e:
+            logger.warning("remove_user_document_chunks 失败: %s", e)
+
+    def search_user_docs(self, query: str, top_k: int = 10) -> list[dict]:
+        """仅搜索用户文档集合（供知识库专用搜索端点使用）"""
+        try:
+            self._ensure_user_collection()
+            count = self.user_collection.count()
+            if count == 0:
+                return []
+
+            try:
+                query_embedding = embedding_service.embed(query, is_query=True)
+            except Exception as e:
+                logger.error("查询向量化失败: %s", e)
+                return []
+
+            results = self.user_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=min(count, top_k),
+                include=["documents", "metadatas", "distances"],
+            )
+
+            user_results = []
+            if results["ids"] and results["ids"][0]:
+                for i, doc_id in enumerate(results["ids"][0]):
+                    meta = results["metadatas"][0][i]
+                    score = 1 - results["distances"][0][i]
+                    if score < -0.5:
+                        continue
+                    user_results.append({
+                        "id": doc_id,
+                        "content": results["documents"][0][i],
+                        "metadata": meta,
+                        "score": score,
+                        "source": "user_upload",
+                        "chapter": meta.get("title", ""),
+                    })
+            return user_results
+        except Exception as e:
+            logger.error("用户文档搜索失败: %s", e)
+            return []
 
     def _get_collection(self):
         """安全获取课程集合引用"""

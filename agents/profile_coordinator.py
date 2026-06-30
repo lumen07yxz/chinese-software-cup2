@@ -1,42 +1,13 @@
 """画像提取协调器 —— 对话流结束后显式提取结构化画像
 
-从 agents/profile_agent.py 导入 Agent 角色定义构建提取 prompt，
-替代前端脆弱的 JSON 正则解析。
+导入集中 prompt 管理。
 """
 
 import json
 import re
 
 from services.spark_service import spark_service
-from agents.profile_agent import PROFILE_AGENT_ROLE, PROFILE_AGENT_GOAL
-
-
-EXTRACT_SYSTEM_PROMPT = f"""{PROFILE_AGENT_ROLE}
-
-{PROFILE_AGENT_GOAL}
-
----
-你的任务是从以下对话中提取或更新学生的学习画像，**仅输出 JSON**，不要多余的文字。
-JSON 格式必须严格如下：
-{{
-  "knowledge_base": {{"领域名": 掌握度0-1}},
-  "cognitive_style": "visual|verbal|active|reflective",
-  "weak_points": ["易错1", "易错2"],
-  "learning_goal": "学习目标文本",
-  "available_time": "每周X小时",
-  "interests": ["兴趣1", "兴趣2"],
-  "conversation_summary": "对话摘要"
-}}
-
-规则：
-- knowledge_base 中如果没有明确信息，用空对象 {{}}
-- cognitive_style 如果不确定，用空字符串 ""
-- weak_points 如果不确定，用空数组 []
-- learning_goal 和 available_time 如果不确定，用空字符串 ""
-- interests 如果不确定，用空数组 []
-- conversation_summary 简要概括本次对话中收集到的关键信息
-- 对于已有画像字段，保留已有信息并在新信息基础上更新
-"""
+from prompts import EXTRACT_SYSTEM_PROMPT
 
 
 class ProfileCoordinator:

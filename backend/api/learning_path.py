@@ -7,6 +7,10 @@ from db import async_session
 from models import LearningPath, AssessmentRecord, User
 from auth import get_current_user
 from services.spark_service import spark_service
+from prompts import (
+    PATH_STRUCTURE_PROMPT, PATH_STRUCTURE_SYSTEM,
+    PATH_ANALYSIS_SYSTEM,
+)
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 import json
@@ -56,60 +60,6 @@ def _extract_json_from_llm(text: str) -> dict | None:
         return None
 
 
-PATH_STRUCTURE_PROMPT = """\
-你是课程学习路径规划专家。请根据学生的需求动态生成个性化的学习路径结构。
-
-学生信息：
-- 学习目标：{learning_goal}
-- 已掌握的知识领域：{knowledge_base_summary}
-- 薄弱环节：{weak_points}
-- 兴趣领域：{interests}
-- 认知风格：{cognitive_style}
-- 每日可用时间：{available_time}
-
-请生成一个个性化的学习路径，包含若干学习节点和它们之间的依赖关系。
-要求：
-1. 节点数量：5-12 个，根据学习目标的复杂度灵活调整
-2. 每个节点是一个独立的学习主题，从基础到进阶排列
-3. 依赖关系表示前置知识要求（A→B 表示要先学 A 再学 B）
-4. 如果学生已有掌握度高的领域，可以跳过或缩短相关节点
-5. 如果学生有明确的薄弱环节，应增加相关节点的详细度和时间
-6. 根据学生兴趣适当增加相关方向的深度
-
-输出严格的 JSON（不要加 markdown 代码块标记）：
-{{
-  "nodes": [
-    {{
-      "id": "node_1",
-      "title": "节点标题",
-      "description": "节点描述",
-      "goals": "学习目标",
-      "key_concepts": ["概念1", "概念2"],
-      "difficulty": 0.3,
-      "estimated_hours": 8,
-      "sub_topics": [
-        {{"title": "子主题", "description": "描述", "key_points": ["点1", "点2"]}}
-      ],
-      "learning_methods": ["方法1"],
-      "milestones": ["里程碑1"],
-      "prerequisites": [],
-      "resources_hint": ["推荐资源类型"]
-    }}
-  ],
-  "edges": [
-    {{"from": "node_1", "to": "node_2", "label": "依赖说明"}}
-  ]
-}}
-
-注意：
-- id 用 node_1, node_2, ... 格式
-- prerequisites 填写前置节点的 id
-- 确保无环依赖
-- difficulty 0.0-1.0
-- 标题要具体，支持任意主题
-- learning_goal 为空时根据画像推荐通用路径"""
-
-
 async def _llm_generate_structure(learning_goal: str, profile: dict) -> dict:
     """调用 LLM 动态生成路径结构 {nodes, edges}"""
     kb_summary = ", ".join(
@@ -130,7 +80,7 @@ async def _llm_generate_structure(learning_goal: str, profile: dict) -> dict:
     )
 
     raw = await spark_service.chat([
-        {"role": "system", "content": "你是一个学习路径规划专家，输出严格的 JSON 格式，不包含任何 markdown 代码块标记或额外文字。输出节点标题和内容要贴近学生实际需求。"},
+        {"role": "system", "content": PATH_STRUCTURE_SYSTEM},
         {"role": "user", "content": prompt},
     ], temperature=0.7)
 
@@ -362,14 +312,7 @@ async def generate_path(
             yield f"data: {json.dumps({'type': 'path_data', 'data': path_data}, ensure_ascii=False)}\n\n"
 
             messages = [
-                {"role": "system", "content": (
-                    "你是学习路径规划专家，擅长根据学生的知识水平、认知风格和学习目标定制个性化学习方案。"
-                    "请基于给定的拓扑排序结果和学生画像，输出专业、具体、有操作性的规划分析（Markdown格式）。"
-                    "每个建议都要有具体的行动步骤，避免笼统的描述。"
-                    "如果学生画像中有薄弱点，必须针对每个薄弱点单独给出攻克方案。"
-                    "将章节划分为 3-4 个形象命名的阶段，为每个阶段命名（如「筑基期」「进阶期」等）。"
-                    "你的输出应该每次都不一样，根据画像差异做出针对性调整。"
-                )},
+                {"role": "system", "content": PATH_ANALYSIS_SYSTEM},
                 {"role": "user", "content": prompt},
             ]
             async for chunk in spark_service.chat_stream(messages, temperature=0.85, max_tokens=4096):
